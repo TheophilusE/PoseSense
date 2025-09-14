@@ -1,0 +1,33 @@
+{
+  "name": "posesense",
+  "version": "1.0.0",
+  "description": "Three.js + TypeScript + Vite project for Mixamo FBX and pose retargeting",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "echo \"No tests configured\" && exit 0"
+  },
+  "keywords": [
+    "three.js",
+    "vite",
+    "typescript",
+    "mixamo",
+    "fbx",
+    "pose"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "three": "^0.180.0",
+    "three-stdlib": "^2.36.0",
+    "vite": "^7.1.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.30",
+    "@types/three": "^0.180.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.2"
+  }
+}

@@ -2,7 +2,8 @@ import asyncio
 import time
 import cv2
 import mediapipe as mp
-from typing import AsyncGenerator, Dict, Any
+import numpy as np
+from typing import AsyncGenerator, Dict, Any, Optional
 
 mp_pose = mp.solutions.pose
 
@@ -13,7 +14,6 @@ pose = mp_pose.Pose(
     min_detection_confidence=0.5,
     min_tracking_confidence=0.5
 )
-
 
 # Define resolution tiers
 RESOLUTIONS = [
@@ -76,22 +76,58 @@ def select_best_camera(max_devices=5):
 
 cap = select_best_camera()
 
-async def mediapipe_live_stream(delay: float = 1/30) -> AsyncGenerator[Dict[str, Any], None]:
-    """Yield pose frames from webcam using MediaPipe Pose."""
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            await asyncio.sleep(0.01)
-            continue
+mp_pose = mp.solutions.pose
 
-        # Convert BGR to RGB
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = pose.process(rgb)
+def make_square(frame):
+    h, w = frame.shape[:2]
+    size = max(h, w)
+    square = np.zeros((size, size, 3), dtype=np.uint8)
+    square[:h, :w] = frame
+    return square
 
-        joints = {}
-        if results.pose_landmarks:
-            for idx, lm in enumerate(results.pose_landmarks.landmark):
-                joints[f"joint_{idx}"] = [lm.x, lm.y, lm.z]
+def crop_to_square(frame):
+    h, w = frame.shape[:2]
+    min_dim = min(h, w)
+    start_x = (w - min_dim) // 2
+    start_y = (h - min_dim) // 2
+    return frame[start_y:start_y+min_dim, start_x:start_x+min_dim]
 
-        yield {"frame": None, "joints": joints}
-        await asyncio.sleep(delay)
+async def mediapipe_live_stream(
+    delay: float = 1 / 30,
+    center_on_joint: Optional[str] = "joint_0",
+) -> AsyncGenerator[Dict[str, Any], None]:
+    """Yield pose frames from webcam using MediaPipe Pose with world coordinates."""
+    with mp_pose.Pose(static_image_mode=False, model_complexity=1, enable_segmentation=False) as pose:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                await asyncio.sleep(0.01)
+                continue
+
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = pose.process(rgb)
+
+            joints = {}
+            if results.pose_world_landmarks:
+                for idx, lm in enumerate(results.pose_world_landmarks.landmark):
+                    joints[f"joint_{idx}"] = [lm.x, lm.y, lm.z]
+
+                # Optional: center coordinates around a reference joint
+                if center_on_joint and center_on_joint in joints:
+                    origin = joints[center_on_joint]
+                    for key in joints:
+                        joints[key] = [
+                            joints[key][0] - origin[0],
+                            joints[key][1] - origin[1],
+                            joints[key][2] - origin[2]
+                        ]
+
+            else:
+                print("No pose detected in this frame.")
+
+            yield {
+                "timestamp": time.time(),
+                "joints": joints
+            }
+
+            await asyncio.sleep(delay)

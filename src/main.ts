@@ -374,6 +374,10 @@ function buildBoneInfo(fbx: THREE.Group) {
   retarget.shoulderWidthModel = computeModelShoulderWidth();
 }
 
+const wrapper = new THREE.Group();
+wrapper.scale.setScalar(0.1); // visual shrink
+scene.add(wrapper);
+
 new FBXLoader().load(
   MODEL_PATH,
   (fbx) => {
@@ -386,7 +390,7 @@ new FBXLoader().load(
       }
     });
 
-    scene.add(fbx);
+    wrapper.add(fbx);
     yBot = fbx;
     retarget.modelRoot = fbx;
     buildBoneInfo(fbx);

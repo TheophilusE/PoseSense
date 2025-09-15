@@ -113,7 +113,7 @@ async def mediapipe_live_stream(
                     joints[f"joint_{idx}"] = [lm.x, lm.y, lm.z]
 
                 # Optional: center coordinates around a reference joint
-                if center_on_joint and center_on_joint in joints:
+                if False and center_on_joint and center_on_joint in joints:
                     origin = joints[center_on_joint]
                     for key in joints:
                         joints[key] = [

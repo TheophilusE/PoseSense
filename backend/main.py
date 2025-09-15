@@ -1,8 +1,8 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from .posestream import mmpose_live_stream
+from .posestream import mediapipe_live_stream
 
-app = FastAPI(title="PoseSense Backend", version="1.0.0")
+app = FastAPI(title="PoseSense MediaPipe Backend", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -16,7 +16,7 @@ app.add_middleware(
 async def posestream(websocket: WebSocket):
     await websocket.accept()
     try:
-        async for frame in mmpose_live_stream():
+        async for frame in mediapipe_live_stream():
             await websocket.send_json(frame)
     except WebSocketDisconnect:
         print("Client disconnected")

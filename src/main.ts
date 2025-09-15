@@ -311,7 +311,7 @@ function normalizeIncomingPose(joints: Joints) {
     const p = new THREE.Vector3(arr[0], arr[1], arr[2]);
 
     // Center at hips and scale to model
-    p.sub(hipCenter).multiplyScalar(smoothedScale);
+    p.sub(hipCenter).multiplyScalar(smoothedScale * 100);
 
     // Axis adjustments
     if (INVERT_Y) p.y *= -1;
@@ -377,7 +377,8 @@ function buildBoneInfo(fbx: THREE.Group) {
 new FBXLoader().load(
   MODEL_PATH,
   (fbx) => {
-    // Keep native FBX scale; do not manually scale the model.
+    fbx.scale.setScalar(0.1);
+
     fbx.traverse((c) => {
       if ((c as THREE.Mesh).isMesh) {
         const m = c as THREE.Mesh;

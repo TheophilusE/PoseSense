@@ -1,0 +1,7 @@
+opencv-python-headless
+fastapi
+uvicorn
+openmim
+torch
+torchvision
+torchaudio

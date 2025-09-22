@@ -1,4 +1,0 @@
-fastapi
-mediapipe
-opencv-python
-uvicorn[standard]

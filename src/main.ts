@@ -309,24 +309,40 @@ renderer.outputColorSpace = (THREE as any).SRGBColorSpace ?? (THREE as any).sRGB
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.0;
 
-// --- Render options UI (shadows, debug skeleton, mesh visibility, wireframe)
-const optsContainer = document.createElement('div');
-optsContainer.style.display = 'grid';
-optsContainer.style.gridTemplateColumns = '1fr auto';
-optsContainer.style.gap = '6px 8px';
-optsContainer.style.marginTop = '10px';
-optsContainer.innerHTML = `
-  <div style="color:rgba(11,18,32,0.6)">Shadows</div><div><input id="opt-shadows" type="checkbox"></div>
-  <div style="color:rgba(11,18,32,0.6)">Debug Skeleton</div><div><input id="opt-debug-skel" type="checkbox"></div>
-  <div style="color:rgba(11,18,32,0.6)">Show Mesh</div><div><input id="opt-show-mesh" type="checkbox"></div>
-  <div style="color:rgba(11,18,32,0.6)">Wireframe</div><div><input id="opt-wireframe" type="checkbox"></div>
+// Render toolbar (indicator + settings)
+const toolbar = document.createElement('div');
+toolbar.id = 'render-toolbar';
+toolbar.style.position = 'fixed';
+toolbar.style.right = '12px';
+toolbar.style.bottom = '12px';
+toolbar.style.top = 'auto';
+toolbar.style.padding = '8px 10px';
+toolbar.style.background = 'rgba(255,255,255,0.95)';
+toolbar.style.border = '1px solid rgba(0,0,0,0.06)';
+toolbar.style.borderRadius = '10px';
+toolbar.style.boxShadow = '0 8px 24px rgba(16,24,32,0.08)';
+toolbar.style.zIndex = '10001';
+toolbar.style.fontFamily = statsEl.style.fontFamily;
+toolbar.style.fontSize = '13px';
+toolbar.innerHTML = `
+  <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+    <div style="font-weight:700">Render</div>
+    <div id="render-indicator" style="font-weight:600;color:#0b1a20;font-size:12px">--</div>
+  </div>
+  <div id="render-opts" style="display:grid;grid-template-columns:1fr auto;gap:6px 10px;margin-top:8px">
+    <div style="color:rgba(11,18,32,0.6)">Shadows</div><div><input id="opt-shadows" type="checkbox"></div>
+    <div style="color:rgba(11,18,32,0.6)">Debug Skeleton</div><div><input id="opt-debug-skel" type="checkbox"></div>
+    <div style="color:rgba(11,18,32,0.6)">Show Mesh</div><div><input id="opt-show-mesh" type="checkbox"></div>
+    <div style="color:rgba(11,18,32,0.6)">Wireframe</div><div><input id="opt-wireframe" type="checkbox"></div>
+  </div>
 `;
-statsEl.appendChild(optsContainer);
+document.body.appendChild(toolbar);
 
 const optShadows = document.getElementById('opt-shadows') as HTMLInputElement | null;
 const optDebugSkel = document.getElementById('opt-debug-skel') as HTMLInputElement | null;
 const optShowMesh = document.getElementById('opt-show-mesh') as HTMLInputElement | null;
 const optWireframe = document.getElementById('opt-wireframe') as HTMLInputElement | null;
+const renderIndicator = document.getElementById('render-indicator') as HTMLDivElement | null;
 
 // initialize checkboxes from persisted options
 if (optShadows) optShadows.checked = !!renderOptions.shadows;
@@ -334,13 +350,23 @@ if (optDebugSkel) optDebugSkel.checked = !!renderOptions.debugSkeleton;
 if (optShowMesh) optShowMesh.checked = !!renderOptions.showSkinnedMesh;
 if (optWireframe) optWireframe.checked = !!renderOptions.wireframe;
 
+function updateRenderIndicator() {
+  if (!renderIndicator) return;
+  const mode = renderOptions.debugSkeleton ? 'Debug Skeleton' : 'Skinned Mesh';
+  const flags: string[] = [];
+  if (renderOptions.shadows) flags.push('Shadows');
+  if (renderOptions.wireframe) flags.push('Wireframe');
+  renderIndicator.textContent = `${mode}${flags.length ? ' · ' + flags.join(', ') : ''}`;
+}
+
 function hookOptionInputs() {
-  if (optShadows) optShadows.addEventListener('change', () => { renderOptions.shadows = optShadows.checked; persistRenderOptions(); applyRenderOptions(); });
-  if (optDebugSkel) optDebugSkel.addEventListener('change', () => { renderOptions.debugSkeleton = optDebugSkel.checked; persistRenderOptions(); applyRenderOptions(); });
-  if (optShowMesh) optShowMesh.addEventListener('change', () => { renderOptions.showSkinnedMesh = optShowMesh.checked; persistRenderOptions(); applyRenderOptions(); });
-  if (optWireframe) optWireframe.addEventListener('change', () => { renderOptions.wireframe = optWireframe.checked; persistRenderOptions(); applyRenderOptions(); });
+  if (optShadows) optShadows.addEventListener('change', () => { renderOptions.shadows = optShadows.checked; persistRenderOptions(); applyRenderOptions(); updateRenderIndicator(); });
+  if (optDebugSkel) optDebugSkel.addEventListener('change', () => { renderOptions.debugSkeleton = optDebugSkel.checked; persistRenderOptions(); applyRenderOptions(); updateRenderIndicator(); });
+  if (optShowMesh) optShowMesh.addEventListener('change', () => { renderOptions.showSkinnedMesh = optShowMesh.checked; persistRenderOptions(); applyRenderOptions(); updateRenderIndicator(); });
+  if (optWireframe) optWireframe.addEventListener('change', () => { renderOptions.wireframe = optWireframe.checked; persistRenderOptions(); applyRenderOptions(); updateRenderIndicator(); });
 }
 hookOptionInputs();
+updateRenderIndicator();
 
 const scene = new THREE.Scene();
 // Bright, neutral studio background

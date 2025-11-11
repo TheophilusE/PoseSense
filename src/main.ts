@@ -82,8 +82,7 @@ statsEl.innerHTML = `
   <div style="color:rgba(11,18,32,0.6)">Retargeter</div><div id="stat-ret" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace">-- ms</div>
 </div>
 <div style="display:flex;gap:8px;margin-top:10px;align-items:center">
-  <canvas id="spark-fps" width="200" height="40" style="flex:1;border-radius:6px;background:rgba(255,255,255,0.03)"></canvas>
-  <canvas id="spark-frame" width="200" height="40" style="flex:1;border-radius:6px;background:rgba(255,255,255,0.03)"></canvas>
+  <canvas id="spark-frame" style="flex:1;min-width:0;height:40px;border-radius:6px;background:rgba(255,255,255,0.03)"></canvas>
 </div>
 `;
 document.body.appendChild(statsEl);
@@ -93,7 +92,6 @@ const statMinMax = document.getElementById('stat-minmax')!;
 const statTris = document.getElementById('stat-tris')!;
 const statDraw = document.getElementById('stat-draw')!;
 const statCam = document.getElementById('stat-cam')!;
-const sparkFps = document.getElementById('spark-fps') as HTMLCanvasElement | null;
 const sparkFrame = document.getElementById('spark-frame') as HTMLCanvasElement | null;
 const statToggle = document.getElementById('stat-toggle') as HTMLButtonElement | null;
 const statReset = document.getElementById('stat-reset') as HTMLButtonElement | null;
@@ -103,17 +101,11 @@ const statRet = document.getElementById('stat-ret')!;
 
 // Sparklines: simple circular buffers
 const SPARK_LEN = 64;
-const fpsHistory: number[] = new Array(SPARK_LEN).fill(0);
 const frameHistory: number[] = new Array(SPARK_LEN).fill(0);
 let sparkIndex = 0;
 // load persisted sparklines if present
 try {
-  const sF = localStorage.getItem('ps_spark_fps');
   const sFr = localStorage.getItem('ps_spark_frame');
-  if (sF) {
-    const arr = JSON.parse(sF) as number[];
-    for (let i = 0; i < Math.min(arr.length, SPARK_LEN); ++i) fpsHistory[i] = arr[i] ?? 0;
-  }
   if (sFr) {
     const arr = JSON.parse(sFr) as number[];
     for (let i = 0; i < Math.min(arr.length, SPARK_LEN); ++i) frameHistory[i] = arr[i] ?? 0;
@@ -201,9 +193,8 @@ if (statReset) {
     statsMin = Number.POSITIVE_INFINITY;
     statsMax = 0;
     statsAvg = 0;
-    for (let i = 0; i < fpsHistory.length; ++i) fpsHistory[i] = 0;
     for (let i = 0; i < frameHistory.length; ++i) frameHistory[i] = 0;
-    try { localStorage.removeItem('ps_spark_fps'); localStorage.removeItem('ps_spark_frame'); } catch (e) {}
+    try { localStorage.removeItem('ps_spark_frame'); } catch (e) { }
   });
 }
 
@@ -343,8 +334,8 @@ let retargeter: Retargeter | null = null;
       return;
     }
 
-  // Reset to bind pose
-  (skinned as THREE.SkinnedMesh).skeleton.pose();
+    // Reset to bind pose
+    (skinned as THREE.SkinnedMesh).skeleton.pose();
 
     scene.add(model);
 
@@ -449,7 +440,7 @@ function animate(): void {
   if (statsNow - statsLastSampleTime >= statsInterval) {
     const avgMsWindow = statsAccumFrames ? (statsAccumTime / statsAccumFrames) : 0;
     const fpsWindow = avgMsWindow > 0 ? (1000.0 / avgMsWindow) : 0;
-    statFps.textContent = `FPS: ${fpsWindow.toFixed(1)}`;
+    statFps.textContent = `${fpsWindow.toFixed(1)} fps`;
     statFrame.textContent = `Frame ms: ${avgMsWindow.toFixed(2)} ms`;
     statMinMax.textContent = `min: ${statsMin.toFixed(2)} ms / max: ${statsMax.toFixed(2)} ms / avg: ${statsAvg.toFixed(2)} ms`;
     // renderer.info contains triangles and draw calls
@@ -459,7 +450,7 @@ function animate(): void {
     // camera info
     const pos = camera.position;
     const rot = camera.rotation;
-    const rotDeg = `${(rot.x * 180/Math.PI).toFixed(1)}, ${(rot.y * 180/Math.PI).toFixed(1)}, ${(rot.z * 180/Math.PI).toFixed(1)}`;
+    const rotDeg = `${(rot.x * 180 / Math.PI).toFixed(1)}, ${(rot.y * 180 / Math.PI).toFixed(1)}, ${(rot.z * 180 / Math.PI).toFixed(1)}`;
     statCam.textContent = `Cam: pos(${pos.x.toFixed(2)}, ${pos.y.toFixed(2)}, ${pos.z.toFixed(2)}) rot(${rotDeg}) fov: ${camera.fov.toFixed(1)}`;
 
     // device memory (coarse)
@@ -482,24 +473,21 @@ function animate(): void {
     }
 
     // reset window accumulators
-  statsLastSampleTime = statsNow;
+    statsLastSampleTime = statsNow;
     statsAccumFrames = 0;
     statsAccumTime = 0;
   }
 
-  // Push into sparkline buffers per frame
-  const instantFps = frameMs > 0 ? (1000.0 / frameMs) : 0;
-  fpsHistory[sparkIndex] = instantFps;
+  // Push into sparkline buffers per frame (ms only)
   frameHistory[sparkIndex] = frameMs;
   sparkIndex = (sparkIndex + 1) % SPARK_LEN;
 
   // persist a small history occasionally
   if (frames % 60 === 0) {
-    try { localStorage.setItem('ps_spark_fps', JSON.stringify(fpsHistory)); localStorage.setItem('ps_spark_frame', JSON.stringify(frameHistory)); } catch (e) {}
+    try { localStorage.setItem('ps_spark_frame', JSON.stringify(frameHistory)); } catch (e) { }
   }
 
   // Draw sparklines (cheap)
-  drawSparkline(sparkFps, fpsHistory, '#1f73ff');
   drawSparkline(sparkFrame, frameHistory, '#ff6b6b');
 
   frames++;

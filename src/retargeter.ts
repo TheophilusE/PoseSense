@@ -72,6 +72,55 @@ export class Retargeter {
       }
     }
 
+    // Auto-compute per-bone correction quaternions by comparing the model's
+    // rest directions with the server's rest directions (same as backend
+    // processor.rest_dirs). This helps align axes between MediaPipe-derived
+    // rotations and the Mixamo bone axes.
+    const serverRestDirs: Record<string, [number, number, number]> = {
+      Spine: [0, 1, 0],
+      LeftUpLeg: [0, -1, 0],
+      LeftLeg: [0, -1, 0],
+      RightUpLeg: [0, -1, 0],
+      RightLeg: [0, -1, 0],
+      LeftShoulder: [-1, 0, 0],
+      RightShoulder: [1, 0, 0],
+      LeftArm: [-1, 0, 0],
+      LeftForeArm: [-1, 0, 0],
+      RightArm: [1, 0, 0],
+      RightForeArm: [1, 0, 0],
+    };
+
+    // Ensure skeleton is in bind pose so world positions represent rest pose
+    try {
+      this.skeleton.pose();
+    } catch (e) {
+      // ignore if not available
+    }
+
+    for (const [name, dirArr] of Object.entries(serverRestDirs)) {
+      const bone = this.findBoneByName(name);
+      if (!bone) continue;
+
+      // find a child bone to infer the model's rest direction for this bone
+      const childBone = bone.children.find((c) => (c as Bone).isBone) as Bone | undefined
+        ?? this.skeleton.bones.find(b => b.parent === bone);
+      if (!childBone) continue;
+
+      const a = new Vector3();
+      const b = new Vector3();
+      bone.getWorldPosition(a);
+      childBone.getWorldPosition(b);
+      const modelDir = b.sub(a).normalize();
+
+      const serverDir = new Vector3(dirArr[0], dirArr[1], dirArr[2]).normalize();
+
+      // corr maps serverRest -> modelRest. We'll store its inverse so later
+      // we can do final = qL * corrInv (see reasoning in code comments).
+      const corr = new Quaternion().setFromUnitVectors(serverDir, modelDir);
+      const corrInv = corr.clone().invert();
+      this.corrections.set(name, corrInv.normalize());
+    }
+
     // Default weights = 1
     const defaultNames = [
       'Spine', 'LeftUpLeg', 'LeftLeg', 'RightUpLeg', 'RightLeg',
@@ -146,9 +195,11 @@ export class Retargeter {
       const corr = this.corrections.get(tname);
 
       // Server quaternions are provided in a common/world-like frame.
-      // Convert desired world rotation -> bone local rotation by
-      // local = parentWorld^{-1} * desiredWorld
-      const desiredWorld = corr ? this._qb.copy(corr).multiply(qL) : qL.clone();
+      // We stored per-bone correction quaternions (as the inverse of
+      // server->model) in `this.corrections`. To convert the incoming
+      // server quaternion qL into the model bone frame we multiply on the
+      // right by the stored correction: final = qL * corrInv
+      const desiredWorld = corr ? this._qb.copy(qL).multiply(corr) : qL.clone();
 
       // Get parent world quaternion (Object3D.getWorldQuaternion writes into target)
       const parent = bone.parent as Object3D | null;
@@ -213,7 +264,7 @@ export class Retargeter {
       }
     }
 
-  if (!this._loggedMappings) this._loggedMappings = true;
+    if (!this._loggedMappings) this._loggedMappings = true;
 
     // Upload to GPU
     this.skeleton.update();

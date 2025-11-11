@@ -432,6 +432,7 @@ scene.add(grid);
 let retargeter: Retargeter | null = null;
 let skinned: THREE.SkinnedMesh | null = null;
 let skeletonHelper: any = null;
+let modelRoot: THREE.Object3D | null = null;
 
 function persistRenderOptions() {
   try { localStorage.setItem('ps_render_opts', JSON.stringify(renderOptions)); } catch (e) { }
@@ -454,12 +455,26 @@ function setWireframeForObject(obj: THREE.Object3D, enabled: boolean) {
 function applyRenderOptions() {
   renderer.shadowMap.enabled = !!renderOptions.shadows;
   try { key.castShadow = !!renderOptions.shadows; } catch (e) { }
-  if (skinned) {
-    (skinned as any).castShadow = !!renderOptions.shadows;
-    (skinned as any).receiveShadow = !!renderOptions.shadows;
+  if (modelRoot) {
+    // enable/disable shadows on all meshes in the model
+    modelRoot.traverse((o) => {
+      if ((o as THREE.Mesh).isMesh) {
+        try {
+          (o as any).castShadow = !!renderOptions.shadows;
+          (o as any).receiveShadow = !!renderOptions.shadows;
+        } catch (e) { }
+      }
+    });
+
+    // Skeleton helper visibility
     if (skeletonHelper) skeletonHelper.visible = !!renderOptions.debugSkeleton;
-    (skinned as any).visible = !!renderOptions.showSkinnedMesh && !renderOptions.debugSkeleton;
-    setWireframeForObject(skinned, !!renderOptions.wireframe);
+
+    // Mesh visibility: showSkinnedMesh controls the filled mesh. If wireframe is enabled
+    // and showSkinnedMesh is false, still show the model so wireframe lines are visible.
+    modelRoot.visible = !!renderOptions.showSkinnedMesh || !!renderOptions.wireframe;
+
+    // Wireframe: apply to entire model (but don't change visibility)
+    setWireframeForObject(modelRoot, !!renderOptions.wireframe);
   }
 }
 
@@ -483,11 +498,12 @@ function applyRenderOptions() {
     (skinned as THREE.SkinnedMesh).skeleton.pose();
 
     scene.add(model);
+    modelRoot = model;
 
     // Apply initial shadow/cast settings from options
     if (skinned) {
-      (skinned as any).castShadow = !!renderOptions.shadows;
-      (skinned as any).receiveShadow = !!renderOptions.shadows;
+      // initial apply on entire model
+      // (applyRenderOptions will set per-mesh flags too)
       // create skeleton helper and respect visibility flag
       try {
         skeletonHelper = new SimpleSkeletonHelper(skinned as any);
@@ -498,9 +514,9 @@ function applyRenderOptions() {
         skeletonHelper = null;
       }
       // set wireframe if requested
-      setWireframeForObject(skinned, !!renderOptions.wireframe);
-      // if debugSkeleton is enabled, hide rendered mesh unless explicitly requested
-      (skinned as any).visible = !!renderOptions.showSkinnedMesh && !renderOptions.debugSkeleton;
+      setWireframeForObject(modelRoot!, !!renderOptions.wireframe);
+      // Apply full render options to modelRoot
+      applyRenderOptions();
     }
 
     retargeter = new Retargeter(skinned!, {

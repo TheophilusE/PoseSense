@@ -2,6 +2,49 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 
+// Lightweight in-file skeleton visualizer to avoid importing three/examples
+class SimpleSkeletonHelper {
+  mesh: THREE.LineSegments;
+  bones: THREE.Object3D[];
+  private _pos: Float32Array;
+
+  constructor(skinned: THREE.SkinnedMesh) {
+    this.bones = skinned.skeleton ? skinned.skeleton.bones.slice() : [];
+    this._pos = new Float32Array(this.bones.length * 2 * 3);
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.BufferAttribute(this._pos, 3));
+    const mat = new THREE.LineBasicMaterial({ color: 0x1f73ff });
+    this.mesh = new THREE.LineSegments(geom, mat);
+    this.mesh.frustumCulled = false;
+    this.update();
+  }
+
+  update() {
+    const attr = this.mesh.geometry.getAttribute('position') as THREE.BufferAttribute;
+    const arr = attr.array as Float32Array;
+    const a = new THREE.Vector3();
+    const b = new THREE.Vector3();
+    let i = 0;
+    for (const bone of this.bones) {
+      bone.getWorldPosition(a);
+      const parent = bone.parent as THREE.Object3D | null;
+      if (parent) parent.getWorldPosition(b); else b.copy(a);
+      arr[i++] = a.x; arr[i++] = a.y; arr[i++] = a.z;
+      arr[i++] = b.x; arr[i++] = b.y; arr[i++] = b.z;
+    }
+    attr.needsUpdate = true;
+    if ((this.mesh.geometry as any).computeBoundingSphere) (this.mesh.geometry as any).computeBoundingSphere();
+  }
+
+  set visible(v: boolean) { this.mesh.visible = v; }
+  get visible() { return this.mesh.visible; }
+
+  dispose() {
+    this.mesh.geometry.dispose();
+    (this.mesh.material as any).dispose();
+  }
+}
+
 import { PoseStream } from "./network.js";
 import { Retargeter } from "./retargeter.js";
 import type { PoseFrame } from "./types.js";
@@ -98,6 +141,8 @@ const statReset = document.getElementById('stat-reset') as HTMLButtonElement | n
 const statMem = document.getElementById('stat-mem')!;
 const statGpu = document.getElementById('stat-gpu')!;
 const statRet = document.getElementById('stat-ret')!;
+
+
 
 // Sparklines: simple circular buffers
 const SPARK_LEN = 64;
@@ -247,13 +292,55 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 document.body.appendChild(renderer.domElement);
 
+// Render options (persisted)
+const renderOptions = (() => {
+  try {
+    const raw = localStorage.getItem('ps_render_opts');
+    if (raw) return JSON.parse(raw);
+  } catch (e) { /* ignore */ }
+  return { shadows: true, debugSkeleton: false, showSkinnedMesh: true, wireframe: false };
+})();
+
 // Enable physically-correct lighting and soft shadows for a studio look
-renderer.shadowMap.enabled = true;
+renderer.shadowMap.enabled = !!renderOptions.shadows;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 (renderer as any).physicallyCorrectLights = true;
 renderer.outputColorSpace = (THREE as any).SRGBColorSpace ?? (THREE as any).sRGBEncoding; // compatibility
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.0;
+
+// --- Render options UI (shadows, debug skeleton, mesh visibility, wireframe)
+const optsContainer = document.createElement('div');
+optsContainer.style.display = 'grid';
+optsContainer.style.gridTemplateColumns = '1fr auto';
+optsContainer.style.gap = '6px 8px';
+optsContainer.style.marginTop = '10px';
+optsContainer.innerHTML = `
+  <div style="color:rgba(11,18,32,0.6)">Shadows</div><div><input id="opt-shadows" type="checkbox"></div>
+  <div style="color:rgba(11,18,32,0.6)">Debug Skeleton</div><div><input id="opt-debug-skel" type="checkbox"></div>
+  <div style="color:rgba(11,18,32,0.6)">Show Mesh</div><div><input id="opt-show-mesh" type="checkbox"></div>
+  <div style="color:rgba(11,18,32,0.6)">Wireframe</div><div><input id="opt-wireframe" type="checkbox"></div>
+`;
+statsEl.appendChild(optsContainer);
+
+const optShadows = document.getElementById('opt-shadows') as HTMLInputElement | null;
+const optDebugSkel = document.getElementById('opt-debug-skel') as HTMLInputElement | null;
+const optShowMesh = document.getElementById('opt-show-mesh') as HTMLInputElement | null;
+const optWireframe = document.getElementById('opt-wireframe') as HTMLInputElement | null;
+
+// initialize checkboxes from persisted options
+if (optShadows) optShadows.checked = !!renderOptions.shadows;
+if (optDebugSkel) optDebugSkel.checked = !!renderOptions.debugSkeleton;
+if (optShowMesh) optShowMesh.checked = !!renderOptions.showSkinnedMesh;
+if (optWireframe) optWireframe.checked = !!renderOptions.wireframe;
+
+function hookOptionInputs() {
+  if (optShadows) optShadows.addEventListener('change', () => { renderOptions.shadows = optShadows.checked; persistRenderOptions(); applyRenderOptions(); });
+  if (optDebugSkel) optDebugSkel.addEventListener('change', () => { renderOptions.debugSkeleton = optDebugSkel.checked; persistRenderOptions(); applyRenderOptions(); });
+  if (optShowMesh) optShowMesh.addEventListener('change', () => { renderOptions.showSkinnedMesh = optShowMesh.checked; persistRenderOptions(); applyRenderOptions(); });
+  if (optWireframe) optWireframe.addEventListener('change', () => { renderOptions.wireframe = optWireframe.checked; persistRenderOptions(); applyRenderOptions(); });
+}
+hookOptionInputs();
 
 const scene = new THREE.Scene();
 // Bright, neutral studio background
@@ -317,13 +404,45 @@ scene.add(grid);
 
 // Load Y-Bot FBX
 let retargeter: Retargeter | null = null;
+let skinned: THREE.SkinnedMesh | null = null;
+let skeletonHelper: any = null;
+
+function persistRenderOptions() {
+  try { localStorage.setItem('ps_render_opts', JSON.stringify(renderOptions)); } catch (e) { }
+}
+
+function setWireframeForObject(obj: THREE.Object3D, enabled: boolean) {
+  obj.traverse((o) => {
+    const m = (o as any).material as THREE.Material | THREE.Material[] | undefined;
+    if (!m) return;
+    if (Array.isArray(m)) {
+      for (const mm of m) {
+        if ((mm as any).wireframe !== undefined) (mm as any).wireframe = enabled;
+      }
+    } else {
+      if ((m as any).wireframe !== undefined) (m as any).wireframe = enabled;
+    }
+  });
+}
+
+function applyRenderOptions() {
+  renderer.shadowMap.enabled = !!renderOptions.shadows;
+  try { key.castShadow = !!renderOptions.shadows; } catch (e) { }
+  if (skinned) {
+    (skinned as any).castShadow = !!renderOptions.shadows;
+    (skinned as any).receiveShadow = !!renderOptions.shadows;
+    if (skeletonHelper) skeletonHelper.visible = !!renderOptions.debugSkeleton;
+    (skinned as any).visible = !!renderOptions.showSkinnedMesh && !renderOptions.debugSkeleton;
+    setWireframeForObject(skinned, !!renderOptions.wireframe);
+  }
+}
 
 (async () => {
   try {
     const model = await loadYBotFbx('/models/y-bot/y-bot.fbx');
 
     // Find first SkinnedMesh
-    let skinned: THREE.SkinnedMesh | null = null;
+    skinned = null;
     model.traverse((obj) => {
       if ((obj as THREE.SkinnedMesh).isSkinnedMesh) skinned = obj as THREE.SkinnedMesh;
     });
@@ -339,7 +458,26 @@ let retargeter: Retargeter | null = null;
 
     scene.add(model);
 
-    retargeter = new Retargeter(skinned, {
+    // Apply initial shadow/cast settings from options
+    if (skinned) {
+      (skinned as any).castShadow = !!renderOptions.shadows;
+      (skinned as any).receiveShadow = !!renderOptions.shadows;
+      // create skeleton helper and respect visibility flag
+      try {
+        skeletonHelper = new SimpleSkeletonHelper(skinned as any);
+        skeletonHelper.visible = !!renderOptions.debugSkeleton;
+        scene.add(skeletonHelper.mesh);
+      } catch (e) {
+        console.warn('Failed to create SimpleSkeletonHelper:', e);
+        skeletonHelper = null;
+      }
+      // set wireframe if requested
+      setWireframeForObject(skinned, !!renderOptions.wireframe);
+      // if debugSkeleton is enabled, hide rendered mesh unless explicitly requested
+      (skinned as any).visible = !!renderOptions.showSkinnedMesh && !renderOptions.debugSkeleton;
+    }
+
+    retargeter = new Retargeter(skinned!, {
       rootScale: 1.0 // set to 1.0 because we scaled model by 0.01 already
       // corrections: { LeftForeArm: new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1,0,0), Math.PI/2) }
     });
@@ -364,6 +502,11 @@ function animate(): void {
   requestAnimationFrame(animate);
   const dt = clock.getDelta();
   controls.update();
+
+  // update skeleton helper lines if present
+  try {
+    if (skeletonHelper && (skeletonHelper as any).update) (skeletonHelper as any).update();
+  } catch (e) { /* ignore update errors */ }
 
   // If available, start a GPU time query for the whole frame render
   let gpuQuery: any = null;

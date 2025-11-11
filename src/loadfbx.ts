@@ -20,20 +20,29 @@ export async function loadYBotFbx(url = "/models/y-bot/y-bot.fbx"): Promise<THRE
       const m = obj as THREE.Mesh;
       m.castShadow = true;
       m.frustumCulled = false;
-      // If FBXLoader created MeshPhongMaterial, it’s fine; you can also upgrade:
+      // If FBXLoader created MeshPhongMaterial, upgrade to MeshStandardMaterial
+      // and enable skinning on the material instance (skinning is not a
+      // constructor option for MeshStandardMaterial).
       if ((m.material as THREE.Material).type === "MeshPhongMaterial") {
         const old = m.material as THREE.MeshPhongMaterial;
         const mat = new THREE.MeshStandardMaterial({
           color: old.color,
           map: (old as any).map ?? null,
-          skinning: true,
           roughness: 0.8,
           metalness: 0.0,
         });
+        // enable skinning on the created material instance
+        (mat as any).skinning = true;
         m.material = mat;
-      } else if ((m.material as any).skinning === undefined) {
-        // Ensure skinning flag is set when needed
-        (m.material as any).skinning = true;
+      } else {
+        // Ensure skinning flag is set when needed. Some loaders return an
+        // array of materials; handle both single material and arrays.
+        const setSkinningFlag = (mat: any) => { if (mat && mat.skinning === undefined) mat.skinning = true; };
+        if (Array.isArray(m.material)) {
+          for (const mm of m.material) setSkinningFlag(mm);
+        } else {
+          setSkinningFlag(m.material as any);
+        }
       }
     }
   });

@@ -7,6 +7,7 @@ import { PoseStream } from "./network.js";
 import { Retargeter } from "./retargeter.js";
 import type { PoseFrame } from "./types.js";
 import { loadYBotFbx } from './loadfbx.js';
+import { quatFromArray, vec3FromArray, slerpQuat, lerpVec3 } from './utils.js';
 
 // Simple TypeScript favicon injector: creates an inline SVG and sets it as the
 // page favicon using a data URI. This avoids adding files to the repo and
@@ -553,8 +554,49 @@ function animate(): void {
   // Update server skeleton overlay (lazy create)
   try {
     if (sample) {
-      const frameForViz = sample.kind === 'interp' ? sample.b : sample.data;
-      if (!serverSkeletonHelper) {
+      // Build an interpolated frame when possible so the server overlay matches
+      // the retargeter's interpolation timing.
+      let frameForViz: any = null;
+      if (sample.kind === 'interp') {
+        const a = sample.a;
+        const b = sample.b;
+        const alpha = sample.alpha;
+        // Interpolate root position
+        const ra = (a.root && Array.isArray(a.root.position)) ? vec3FromArray(a.root.position as [number, number, number]) : new THREE.Vector3();
+        const rb = (b.root && Array.isArray(b.root.position)) ? vec3FromArray(b.root.position as [number, number, number]) : new THREE.Vector3();
+        const rp = lerpVec3(new THREE.Vector3(), ra, rb, alpha);
+
+        // Interpolate root rotation
+        const rqa = (a.root && Array.isArray(a.root.rotation)) ? quatFromArray(a.root.rotation as [number, number, number, number]) : new THREE.Quaternion();
+        const rqb = (b.root && Array.isArray(b.root.rotation)) ? quatFromArray(b.root.rotation as [number, number, number, number]) : new THREE.Quaternion();
+        const rqi = slerpQuat(new THREE.Quaternion(), rqa, rqb, alpha);
+
+        // Interpolate joints by name
+        const ma = new Map<string, any>();
+        const mb = new Map<string, any>();
+        if (Array.isArray(a.joints)) for (const j of a.joints) ma.set(j.name, j.rotation);
+        if (Array.isArray(b.joints)) for (const j of b.joints) mb.set(j.name, j.rotation);
+        const jointNames = Array.from(new Set([...(Array.isArray(a.joints) ? a.joints.map((j: any) => j.name) : []), ...(Array.isArray(b.joints) ? b.joints.map((j: any) => j.name) : [])]));
+        const joints: any[] = [];
+        for (const name of jointNames) {
+          const raArr = ma.get(name) as [number, number, number, number] | undefined;
+          const rbArr = mb.get(name) as [number, number, number, number] | undefined;
+          const qa = raArr ? quatFromArray(raArr) : new THREE.Quaternion();
+          const qb = rbArr ? quatFromArray(rbArr) : new THREE.Quaternion();
+          const qi = slerpQuat(new THREE.Quaternion(), qa, qb, alpha);
+          joints.push({ name, rotation: [qi.w, qi.x, qi.y, qi.z] });
+        }
+
+        frameForViz = {
+          ...b,
+          root: { position: [rp.x, rp.y, rp.z], rotation: [rqi.w, rqi.x, rqi.y, rqi.z] },
+          joints
+        };
+      } else {
+        frameForViz = sample.data;
+      }
+
+      if (!serverSkeletonHelper && frameForViz) {
         const names = Array.isArray(frameForViz.joints) ? frameForViz.joints.map((j: any) => j.name) : [];
         if (names.length) {
           serverSkeletonHelper = new ServerSkeletonHelper(names);
@@ -562,7 +604,7 @@ function animate(): void {
           scene.add(serverSkeletonHelper.mesh);
         }
       }
-      if (serverSkeletonHelper) {
+      if (serverSkeletonHelper && frameForViz) {
         serverSkeletonHelper.updateFromPose(frameForViz, modelBonesByName ?? undefined);
       }
     }

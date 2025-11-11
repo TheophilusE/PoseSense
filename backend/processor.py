@@ -3,7 +3,7 @@ import cv2
 import numpy as np
 import mediapipe as mp
 from posemath import OneEuro
-from retarget import retarget_landmarks_to_mixamo
+from canonical import landmarks_to_canonical
 
 # Define resolution tiers
 RESOLUTIONS = [
@@ -124,12 +124,12 @@ class PoseProcessor:
         flat_s = self.filter_pos.filter(flat)
         lmk_s = flat_s.reshape(lmk.shape)
 
-        joints, root_pos, root_rot, meta = retarget_landmarks_to_mixamo(lmk_s, self.rest_dirs)
+        joints, root_pos, root_rot, meta = landmarks_to_canonical(lmk_s)
         # Compose payload
         payload = {
             "type": "poseFrame",
             "timestamp": int(time.time() * 1000),
-            "skeleton": "Mixamo",
+            "skeleton": "Canonical",
             "frame": int(frame_idx),
             "fps": float(self.fps),
             "root": {

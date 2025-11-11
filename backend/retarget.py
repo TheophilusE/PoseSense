@@ -109,18 +109,11 @@ def retarget_landmarks_to_mixamo(lmk3d, rest_pose_dirs):
     out["RightArm"]    = joint_from_bone(rest_pose_dirs["RightArm"], R_arm_curr)
     out["RightForeArm"]= joint_from_bone(rest_pose_dirs["RightForeArm"], R_fore_curr)
 
-    # Convert joint quaternions from world-observed frame into the
-    # server's canonical model/root-relative frame. We do this by
-    # conjugating each joint quaternion by the root rotation:
-    #   q_model = root^{-1} * q_world * root
-    # This makes the joints relative to the root/model axes which is a
-    # standard we use on the client.
-    root_conj = quat_conjugate(root_rot)
-    for k, q in list(out.items()):
-        q_world = q
-        # q_model = root_conj * q_world * root_rot
-        q_model = quat_mul(quat_mul(root_conj, q_world), root_rot)
-        out[k] = q_model / np.linalg.norm(q_model)
-
-    meta = {"scale": float(scale), "model_space": "mixamo"}
+    # Return joint quaternions in the server's canonical internal frame
+    # (not converted to any target skeleton). The client (frontend)
+    # will be responsible for retargeting from this canonical frame to
+    # the Mixamo skeleton. We include a meta field to advertise the
+    # server's model space so the client can decide whether to apply
+    # additional corrections.
+    meta = {"scale": float(scale), "model_space": "canonical"}
     return out, root_pos, root_rot, meta

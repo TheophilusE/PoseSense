@@ -19,6 +19,7 @@ export class Retargeter {
   private _qa = new Quaternion();
   private _qb = new Quaternion();
   private _qr = new Quaternion();
+  private _loggedSpine = false;
   private _va = new Vector3();
   private _vb = new Vector3();
   private _vr = new Vector3();
@@ -153,18 +154,51 @@ export class Retargeter {
       const parent = bone.parent as Object3D | null;
       if (parent) {
         parent.getWorldQuaternion(this._qr);
+        // Debug: log spine quaternions once to inspect why center bone is stationary
+        if (!this._loggedSpine && (tname === 'Spine' || bone.name.toLowerCase().includes('spine'))) {
+          // desiredWorld in _qb (we set below), parent world in _qr
+          // compute local for logging
+          const parentInv = this._qa.copy(this._qr).invert();
+          const localForLog = parentInv.clone().multiply(desiredWorld);
+          // eslint-disable-next-line no-console
+          console.log('Retargeter debug (Spine):', JSON.stringify({
+            srvName, tname, boneName: bone.name,
+            qL: qL.toArray().map(n => Number(n.toFixed(6))),
+            desiredWorld: desiredWorld.toArray().map(n => Number(n.toFixed(6))),
+            parentWorld: this._qr.toArray().map(n => Number(n.toFixed(6))),
+            computedLocal: localForLog.toArray().map(n => Number(n.toFixed(6)))
+          }));
+          this._loggedSpine = true;
+        }
         // parent world inverse
         this._qr.invert();
         // local = parentInv * desiredWorld
         const local = this._qa.copy(this._qr).multiply(desiredWorld);
 
-        const w = this.jointWeights.get(tname) ?? 1.0;
-        if (w >= 1.0) {
-          bone.quaternion.copy(local);
-        } else if (w <= 0) {
-          // leave as-is
+        // Special-case: distribute spine rotation across multiple spine bones
+        if (tname === 'Spine') {
+          const spineNames = ['Spine', 'Spine1', 'Spine2'];
+          const spineWeights = [1.0, 0.5, 0.25];
+          for (let i = 0; i < spineNames.length; ++i) {
+            const sName = spineNames[i]!;
+            const b = this.findBoneByName(sName);
+            if (!b) continue;
+            const sw = spineWeights[i] ?? 1.0;
+            if (sw >= 1.0) {
+              b.quaternion.copy(local);
+            } else {
+              b.quaternion.slerp(local, sw);
+            }
+          }
         } else {
-          bone.quaternion.slerp(local, w);
+          const w = this.jointWeights.get(tname) ?? 1.0;
+          if (w >= 1.0) {
+            bone.quaternion.copy(local);
+          } else if (w <= 0) {
+            // leave as-is
+          } else {
+            bone.quaternion.slerp(local, w);
+          }
         }
       } else {
         // No parent (shouldn't usually happen) — apply directly

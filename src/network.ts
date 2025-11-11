@@ -55,7 +55,7 @@ export class PoseStream {
       // Trim head to cap buffer span
       const head = this.buffer[0]?.ts;
       if (head !== undefined) {
-        while (this.buffer.length && (this.buffer[this.buffer.length - 1].ts - head) > this.maxBufferMs) {
+        while (this.buffer.length && (this.buffer[this.buffer.length - 1]!.ts - head) > this.maxBufferMs) {
           this.buffer.shift();
         }
       }
@@ -76,20 +76,30 @@ export class PoseStream {
 
     let i1 = -1;
     for (let i = this.buffer.length - 1; i >= 0; --i) {
-      if (this.buffer[i].ts <= targetServerTime) { i1 = i; break; }
+      if (this.buffer[i]!.ts <= targetServerTime) { i1 = i; break; }
     }
     if (i1 === -1) {
-      return { kind: 'hold', data: this.buffer[0].data, alpha: 0 };
+      return { kind: 'hold', data: this.buffer[0]!.data, alpha: 0 };
     }
     if (i1 === this.buffer.length - 1) {
-      return { kind: 'hold', data: this.buffer[i1].data, alpha: 0 };
+      return { kind: 'hold', data: this.buffer[i1]!.data, alpha: 0 };
     }
 
-    const a = this.buffer[i1];
-    const b = this.buffer[i1 + 1];
+    const a = this.buffer[i1]!;
+    const b = this.buffer[i1 + 1]!;
     const span = Math.max(1, b.ts - a.ts);
     const t = (targetServerTime - a.ts) / span;
 
     return { kind: 'interp', a: a.data, b: b.data, alpha: t };
+  }
+
+  /**
+   * Get the most recently received frame (if any). This returns the latest
+   * buffered PoseFrame as-is and is intended for UI/debug readout of
+   * metadata (frame number, skeleton name, confidence, etc.).
+   */
+  public getLatestFrame(): PoseFrame | null {
+    if (!this.buffer.length) return null;
+    return this.buffer[this.buffer.length - 1]!.data;
   }
 }

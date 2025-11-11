@@ -529,6 +529,15 @@ function animate(): void {
     }
   }
 
+  // Update network overlay with latest server skeleton/frame metadata
+  try {
+    const latest = (stream as any).getLatestFrame ? (stream as any).getLatestFrame() : null as any;
+    if (latest && netEl) {
+      const conf = latest.meta && (latest.meta as any).confidence;
+      netEl.textContent = `Net: ${latest.skeleton ?? '—'} · frame ${latest.frame ?? '—'} · fps ${latest.fps ?? '—'} · conf ${typeof conf === 'number' ? conf.toFixed(2) : '—'}`;
+    }
+  } catch (e) { /* ignore UI update errors */ }
+
   renderer.render(scene, camera);
 
   // End gpu query and try to resolve previous queries (non-blocking)

@@ -61,9 +61,19 @@ statsEl.style.boxShadow = '0 12px 40px rgba(16,24,32,0.12)';
 (statsEl.style as any).webkitBackdropFilter = 'blur(10px) saturate(120%)';
 statsEl.style.zIndex = '9999';
 statsEl.innerHTML = `
-<div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:8px">
-  <div style="font-weight:700;font-size:14px">Render</div>
-  <div style="font-size:11px;color:rgba(11,18,32,0.55);letter-spacing:0.6px">stats</div>
+<div id="stat-header" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;cursor:grab">
+  <div style="display:flex;flex-direction:column">
+    <div style="font-weight:700;font-size:14px">Render</div>
+    <div style="font-size:11px;color:rgba(11,18,32,0.45);letter-spacing:0.6px">stats</div>
+  </div>
+  <div style="display:flex;align-items:center;gap:8px">
+    <button id="stat-toggle" title="Toggle stats" style="background:transparent;border:none;cursor:pointer;padding:6px;border-radius:6px">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M12 5C7 5 2.73 8.11 1 12c1.73 3.89 6 7 11 7s9.27-3.11 11-7c-1.73-3.89-6-7-11-7z" stroke="rgba(11,18,32,0.7)" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+        <circle cx="12" cy="12" r="3" stroke="rgba(11,18,32,0.7)" stroke-width="1.2"/>
+      </svg>
+    </button>
+  </div>
 </div>
 <div style="display:grid;grid-template-columns:1fr auto;gap:6px 12px;align-items:center">
   <div style="color:rgba(11,18,32,0.6)">FPS</div><div id="stat-fps" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;font-weight:700">--</div>
@@ -73,6 +83,10 @@ statsEl.innerHTML = `
   <div style="color:rgba(11,18,32,0.6)">Draws</div><div id="stat-draw" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace">--</div>
   <div style="color:rgba(11,18,32,0.6)">Camera</div><div id="stat-cam" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace">pos(--)</div>
 </div>
+<div style="display:flex;gap:8px;margin-top:10px;align-items:center">
+  <canvas id="spark-fps" width="200" height="40" style="flex:1;border-radius:6px;background:rgba(255,255,255,0.03)"></canvas>
+  <canvas id="spark-frame" width="200" height="40" style="flex:1;border-radius:6px;background:rgba(255,255,255,0.03)"></canvas>
+</div>
 `;
 document.body.appendChild(statsEl);
 const statFps = document.getElementById('stat-fps')!;
@@ -81,6 +95,97 @@ const statMinMax = document.getElementById('stat-minmax')!;
 const statTris = document.getElementById('stat-tris')!;
 const statDraw = document.getElementById('stat-draw')!;
 const statCam = document.getElementById('stat-cam')!;
+const sparkFps = document.getElementById('spark-fps') as HTMLCanvasElement | null;
+const sparkFrame = document.getElementById('spark-frame') as HTMLCanvasElement | null;
+const statToggle = document.getElementById('stat-toggle') as HTMLButtonElement | null;
+
+// Sparklines: simple circular buffers
+const SPARK_LEN = 64;
+const fpsHistory: number[] = new Array(SPARK_LEN).fill(0);
+const frameHistory: number[] = new Array(SPARK_LEN).fill(0);
+let sparkIndex = 0;
+
+function drawSparkline(canvas: HTMLCanvasElement | null, data: number[], color = '#1f73ff') {
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  const w = canvas.width;
+  const h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  // background subtle
+  ctx.fillStyle = 'rgba(255,255,255,0.02)';
+  ctx.fillRect(0, 0, w, h);
+
+  const max = Math.max(...data, 1e-3);
+  const min = Math.min(...data, max);
+  const range = Math.max(max - min, 1e-6);
+
+  ctx.beginPath();
+  for (let i = 0; i < data.length; ++i) {
+    const v = data[(sparkIndex + i) % data.length] ?? 0;
+    const x = (i / (data.length - 1)) * w;
+    const norm = (v - min) / range;
+    const y = h - norm * (h - 4) - 2;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // fill gradient
+  const grad = ctx.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, color + '33');
+  grad.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.lineTo(w, h);
+  ctx.lineTo(0, h);
+  ctx.closePath();
+  ctx.fillStyle = grad as any;
+  ctx.fill();
+}
+
+// Toggle button behavior
+if (statToggle) {
+  statToggle.addEventListener('click', () => {
+    if (statsEl.style.display === 'none') {
+      statsEl.style.display = 'block';
+    } else {
+      statsEl.style.display = 'none';
+    }
+  });
+}
+
+// Make the panel draggable via header
+const header = document.getElementById('stat-header');
+if (header) {
+  let dragging = false;
+  let startX = 0, startY = 0;
+  let startLeft = 0, startTop = 0;
+  header.addEventListener('pointerdown', (ev) => {
+    dragging = true;
+    header.setPointerCapture(ev.pointerId);
+    startX = ev.clientX;
+    startY = ev.clientY;
+    const rect = statsEl.getBoundingClientRect();
+    startLeft = rect.left;
+    startTop = rect.top;
+    statsEl.style.right = 'auto';
+    statsEl.style.left = `${startLeft}px`;
+    statsEl.style.top = `${startTop}px`;
+    statsEl.style.cursor = 'grabbing';
+  });
+  window.addEventListener('pointermove', (ev) => {
+    if (!dragging) return;
+    const dx = ev.clientX - startX;
+    const dy = ev.clientY - startY;
+    statsEl.style.left = `${startLeft + dx}px`;
+    statsEl.style.top = `${startTop + dy}px`;
+  });
+  window.addEventListener('pointerup', (ev) => {
+    if (!dragging) return;
+    dragging = false;
+    statsEl.style.cursor = 'grab';
+  });
+}
 
 // Stats accumulators
 let statsCount = 0;
@@ -262,6 +367,16 @@ function animate(): void {
     statsAccumFrames = 0;
     statsAccumTime = 0;
   }
+
+  // Push into sparkline buffers per frame
+  const instantFps = frameMs > 0 ? (1000.0 / frameMs) : 0;
+  fpsHistory[sparkIndex] = instantFps;
+  frameHistory[sparkIndex] = frameMs;
+  sparkIndex = (sparkIndex + 1) % SPARK_LEN;
+
+  // Draw sparklines (cheap)
+  drawSparkline(sparkFps, fpsHistory, '#1f73ff');
+  drawSparkline(sparkFrame, frameHistory, '#ff6b6b');
 
   frames++;
   const now = performance.now();

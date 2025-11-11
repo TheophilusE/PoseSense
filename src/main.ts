@@ -7,6 +7,34 @@ import { Retargeter } from "./retargeter.js";
 import type { PoseFrame } from "./types.js";
 import { loadYBotFbx } from './loadfbx.js';
 
+// Simple TypeScript favicon injector: creates an inline SVG and sets it as the
+// page favicon using a data URI. This avoids adding files to the repo and
+// works in modern browsers.
+function setFaviconSvg(): void {
+  const svg = `<?xml version="1.0" encoding="UTF-8"?>` +
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">` +
+    `<rect width="64" height="64" rx="10" fill="#0f1724"/>` +
+    `<circle cx="32" cy="32" r="26" fill="#1a73e8"/>` +
+    `<circle cx="32" cy="20" r="5" fill="#ffffff"/>` +
+    `<path d="M32 25 L32 38" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>` +
+    `<path d="M32 30 L22 36" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>` +
+    `<path d="M32 30 L42 36" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>` +
+    `<path d="M32 38 L24 50" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>` +
+    `<path d="M32 38 L40 50" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>` +
+    `</svg>`;
+
+  const url = 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
+  let link = document.querySelector("link[rel~='icon']") as HTMLLinkElement | null;
+  if (!link) {
+    link = document.createElement('link');
+    link.rel = 'icon';
+    document.head.appendChild(link);
+  }
+  link.href = url;
+}
+
+setFaviconSvg();
+
 const statusEl = document.getElementById('status')!;
 const fpsEl = document.getElementById('fps')!;
 const netEl = document.getElementById('net')!;

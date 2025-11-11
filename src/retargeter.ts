@@ -194,12 +194,19 @@ export class Retargeter {
 
       const corr = this.corrections.get(tname);
 
-      // Server quaternions are provided in a common/world-like frame.
-      // We stored per-bone correction quaternions (as the inverse of
-      // server->model) in `this.corrections`. To convert the incoming
-      // server quaternion qL into the model bone frame we multiply on the
-      // right by the stored correction: final = qL * corrInv
-      const desiredWorld = corr ? this._qb.copy(qL).multiply(corr) : qL.clone();
+      // If the incoming frames indicate they are already provided in
+      // model-relative space (server meta.model_space === 'mixamo'),
+      // don't apply corrections — the backend already converted them.
+      const serverIsModelSpace = (a.meta && (a.meta as any).model_space === 'mixamo') ||
+        (b.meta && (b.meta as any).model_space === 'mixamo');
+
+      // Server quaternions are provided either in a common/world-like
+      // frame (older backend) or already in model space (new backend).
+      // If we have a per-bone correction and the server did not already
+      // convert into model space, apply it by right-multiplying.
+      const desiredWorld = (!serverIsModelSpace && corr)
+        ? this._qb.copy(qL).multiply(corr)
+        : qL.clone();
 
       // Get parent world quaternion (Object3D.getWorldQuaternion writes into target)
       const parent = bone.parent as Object3D | null;

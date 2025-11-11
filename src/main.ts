@@ -440,18 +440,18 @@ function animate(): void {
   if (statsNow - statsLastSampleTime >= statsInterval) {
     const avgMsWindow = statsAccumFrames ? (statsAccumTime / statsAccumFrames) : 0;
     const fpsWindow = avgMsWindow > 0 ? (1000.0 / avgMsWindow) : 0;
-    statFps.textContent = `${fpsWindow.toFixed(1)} fps`;
-    statFrame.textContent = `Frame ms: ${avgMsWindow.toFixed(2)} ms`;
-    statMinMax.textContent = `min: ${statsMin.toFixed(2)} ms / max: ${statsMax.toFixed(2)} ms / avg: ${statsAvg.toFixed(2)} ms`;
+    statFps.textContent = `${fpsWindow.toFixed(1)}`;
+    statFrame.textContent = `${avgMsWindow.toFixed(2)} ms`;
+    statMinMax.textContent = `${statsMin.toFixed(2)} / ${statsMax.toFixed(2)} / ${statsAvg.toFixed(2)} ms`;
     // renderer.info contains triangles and draw calls
     const info = renderer.info;
-    statTris.textContent = `Triangles: ${info.render.triangles ?? 0}`;
-    statDraw.textContent = `Draw calls: ${info.render.calls ?? 0}`;
+    statTris.textContent = `${info.render.triangles ?? 0}`;
+    statDraw.textContent = `${info.render.calls ?? 0}`;
     // camera info
     const pos = camera.position;
     const rot = camera.rotation;
     const rotDeg = `${(rot.x * 180 / Math.PI).toFixed(1)}, ${(rot.y * 180 / Math.PI).toFixed(1)}, ${(rot.z * 180 / Math.PI).toFixed(1)}`;
-    statCam.textContent = `Cam: pos(${pos.x.toFixed(2)}, ${pos.y.toFixed(2)}, ${pos.z.toFixed(2)}) rot(${rotDeg}) fov: ${camera.fov.toFixed(1)}`;
+    statCam.textContent = `pos(${pos.x.toFixed(2)}, ${pos.y.toFixed(2)}, ${pos.z.toFixed(2)}) rot(${rotDeg}) fov ${camera.fov.toFixed(1)}`;
 
     // device memory (coarse)
     try {
@@ -466,7 +466,7 @@ function animate(): void {
     if (retargeter && (retargeter as any).getRetargetStats) {
       try {
         const r = (retargeter as any).getRetargetStats();
-        statRet.textContent = `${r.last.toFixed(2)} ms (avg ${r.avg.toFixed(2)} ms, bones ${r.boneCount})`;
+        statRet.textContent = `${r.last.toFixed(2)} / ${r.avg.toFixed(2)} ms (bones ${r.boneCount})`;
       } catch (e) {
         statRet.textContent = `--`;
       }

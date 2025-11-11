@@ -67,12 +67,7 @@ statsEl.innerHTML = `
     <div style="font-size:11px;color:rgba(11,18,32,0.45);letter-spacing:0.6px">stats</div>
   </div>
   <div style="display:flex;align-items:center;gap:8px">
-    <button id="stat-toggle" title="Toggle stats" style="background:transparent;border:none;cursor:pointer;padding:6px;border-radius:6px">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <path d="M12 5C7 5 2.73 8.11 1 12c1.73 3.89 6 7 11 7s9.27-3.11 11-7c-1.73-3.89-6-7-11-7z" stroke="rgba(11,18,32,0.7)" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-        <circle cx="12" cy="12" r="3" stroke="rgba(11,18,32,0.7)" stroke-width="1.2"/>
-      </svg>
-    </button>
+    <button id="stat-reset" title="Reset min/max" style="background:transparent;border:none;cursor:pointer;padding:6px;border-radius:6px;font-weight:700;color:rgba(11,18,32,0.7)">Reset</button>
   </div>
 </div>
 <div style="display:grid;grid-template-columns:1fr auto;gap:6px 12px;align-items:center">
@@ -82,6 +77,9 @@ statsEl.innerHTML = `
   <div style="color:rgba(11,18,32,0.6)">Triangles</div><div id="stat-tris" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace">--</div>
   <div style="color:rgba(11,18,32,0.6)">Draws</div><div id="stat-draw" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace">--</div>
   <div style="color:rgba(11,18,32,0.6)">Camera</div><div id="stat-cam" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace">pos(--)</div>
+  <div style="color:rgba(11,18,32,0.6)">Memory</div><div id="stat-mem" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace">-- GB</div>
+  <div style="color:rgba(11,18,32,0.6)">GPU Render</div><div id="stat-gpu" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace">-- ms</div>
+  <div style="color:rgba(11,18,32,0.6)">Retargeter</div><div id="stat-ret" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace">-- ms</div>
 </div>
 <div style="display:flex;gap:8px;margin-top:10px;align-items:center">
   <canvas id="spark-fps" width="200" height="40" style="flex:1;border-radius:6px;background:rgba(255,255,255,0.03)"></canvas>
@@ -98,15 +96,40 @@ const statCam = document.getElementById('stat-cam')!;
 const sparkFps = document.getElementById('spark-fps') as HTMLCanvasElement | null;
 const sparkFrame = document.getElementById('spark-frame') as HTMLCanvasElement | null;
 const statToggle = document.getElementById('stat-toggle') as HTMLButtonElement | null;
+const statReset = document.getElementById('stat-reset') as HTMLButtonElement | null;
+const statMem = document.getElementById('stat-mem')!;
+const statGpu = document.getElementById('stat-gpu')!;
+const statRet = document.getElementById('stat-ret')!;
 
 // Sparklines: simple circular buffers
 const SPARK_LEN = 64;
 const fpsHistory: number[] = new Array(SPARK_LEN).fill(0);
 const frameHistory: number[] = new Array(SPARK_LEN).fill(0);
 let sparkIndex = 0;
+// load persisted sparklines if present
+try {
+  const sF = localStorage.getItem('ps_spark_fps');
+  const sFr = localStorage.getItem('ps_spark_frame');
+  if (sF) {
+    const arr = JSON.parse(sF) as number[];
+    for (let i = 0; i < Math.min(arr.length, SPARK_LEN); ++i) fpsHistory[i] = arr[i] ?? 0;
+  }
+  if (sFr) {
+    const arr = JSON.parse(sFr) as number[];
+    for (let i = 0; i < Math.min(arr.length, SPARK_LEN); ++i) frameHistory[i] = arr[i] ?? 0;
+  }
+} catch (e) { /* ignore */ }
 
 function drawSparkline(canvas: HTMLCanvasElement | null, data: number[], color = '#1f73ff') {
   if (!canvas) return;
+  // Make canvas pixel-ratio aware and responsive
+  const dpr = Math.max(1, window.devicePixelRatio || 1);
+  const rectW = Math.floor((canvas.clientWidth || canvas.width));
+  const rectH = Math.floor((canvas.clientHeight || canvas.height));
+  canvas.width = rectW * dpr;
+  canvas.height = rectH * dpr;
+  canvas.style.width = rectW + 'px';
+  canvas.style.height = rectH + 'px';
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
   const w = canvas.width;
@@ -129,7 +152,7 @@ function drawSparkline(canvas: HTMLCanvasElement | null, data: number[], color =
     if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
   }
   ctx.strokeStyle = color;
-  ctx.lineWidth = 2;
+  ctx.lineWidth = Math.max(1, 2 * (window.devicePixelRatio || 1));
   ctx.stroke();
 
   // fill gradient
@@ -141,16 +164,46 @@ function drawSparkline(canvas: HTMLCanvasElement | null, data: number[], color =
   ctx.closePath();
   ctx.fillStyle = grad as any;
   ctx.fill();
+
+  // draw current numeric overlay top-right
+  const lastVal = data[(sparkIndex + data.length - 1) % data.length] ?? 0;
+  ctx.fillStyle = 'rgba(255,255,255,0.9)';
+  ctx.font = `${12 * dpr}px ui-monospace, SFMono-Regular, Menlo, Monaco, monospace`;
+  ctx.textAlign = 'right';
+  ctx.fillText(lastVal.toFixed(1), w - 6 * dpr, 14 * dpr);
 }
 
-// Toggle button behavior
-if (statToggle) {
-  statToggle.addEventListener('click', () => {
-    if (statsEl.style.display === 'none') {
-      statsEl.style.display = 'block';
-    } else {
-      statsEl.style.display = 'none';
-    }
+// Create external toggle so the panel can be hidden but still revealed
+const externalToggle = document.createElement('button');
+externalToggle.title = 'Toggle stats';
+externalToggle.style.position = 'fixed';
+externalToggle.style.right = '12px';
+externalToggle.style.top = '12px';
+externalToggle.style.width = '40px';
+externalToggle.style.height = '40px';
+externalToggle.style.borderRadius = '8px';
+externalToggle.style.background = 'rgba(255,255,255,0.92)';
+externalToggle.style.border = '1px solid rgba(0,0,0,0.06)';
+externalToggle.style.boxShadow = '0 6px 18px rgba(16,24,32,0.08)';
+externalToggle.style.zIndex = '10000';
+externalToggle.textContent = '▦';
+externalToggle.addEventListener('click', () => {
+  if (statsEl.style.display === 'none') statsEl.style.display = 'block'; else statsEl.style.display = 'none';
+});
+document.body.appendChild(externalToggle);
+
+// internal toggle (hidden) kept for backward compat but not visible
+if (statToggle) statToggle.style.display = 'none';
+
+// Reset button clears min/max/avg and spark history
+if (statReset) {
+  statReset.addEventListener('click', () => {
+    statsMin = Number.POSITIVE_INFINITY;
+    statsMax = 0;
+    statsAvg = 0;
+    for (let i = 0; i < fpsHistory.length; ++i) fpsHistory[i] = 0;
+    for (let i = 0; i < frameHistory.length; ++i) frameHistory[i] = 0;
+    try { localStorage.removeItem('ps_spark_fps'); localStorage.removeItem('ps_spark_frame'); } catch (e) {}
   });
 }
 
@@ -321,6 +374,29 @@ function animate(): void {
   const dt = clock.getDelta();
   controls.update();
 
+  // If available, start a GPU time query for the whole frame render
+  let gpuQuery: any = null;
+  let gl: any;
+  try {
+    gl = renderer.getContext();
+  } catch (e) { gl = null; }
+
+  if (gl && (gl as any).getExtension) {
+    try {
+      const ext = (gl as any).getExtension('EXT_disjoint_timer_query_webgl2') || (gl as any).getExtension('EXT_disjoint_timer_query');
+      if (ext && (gl as any).createQuery) {
+        try {
+          gpuQuery = (gl as any).createQuery();
+          // TIME_ELAPSED_EXT constant is on the extension
+          const TIME_ELAPSED = ext.TIME_ELAPSED_EXT || ext.TIME_ELAPSED;
+          if (TIME_ELAPSED) (gl as any).beginQuery(TIME_ELAPSED, gpuQuery);
+        } catch (e) {
+          gpuQuery = null;
+        }
+      }
+    } catch (e) { /* ignore */ }
+  }
+
   if (retargeter) {
     const sample = stream.pollInterpolated();
     if (sample) {
@@ -333,6 +409,30 @@ function animate(): void {
   }
 
   renderer.render(scene, camera);
+
+  // End gpu query and try to resolve previous queries (non-blocking)
+  try {
+    if (gpuQuery && gl) {
+      const ext = (gl as any).getExtension('EXT_disjoint_timer_query_webgl2') || (gl as any).getExtension('EXT_disjoint_timer_query');
+      const TIME_ELAPSED = ext && (ext.TIME_ELAPSED_EXT || ext.TIME_ELAPSED);
+      if (TIME_ELAPSED) (gl as any).endQuery(TIME_ELAPSED);
+      // Try to read an available result from last frame's query (non-blocking)
+      if ((gl as any).getQueryParameter) {
+        // Read last query result if available
+        try {
+          const available = (gl as any).getQueryParameter(gpuQuery, (gl as any).QUERY_RESULT_AVAILABLE);
+          const disjoint = ext && (gl as any).getParameter(ext.GPU_DISJOINT_EXT);
+          if (available && !disjoint) {
+            const timeElapsed = (gl as any).getQueryParameter(gpuQuery, (gl as any).QUERY_RESULT);
+            // For EXT_disjoint_timer_query, result is in nanoseconds
+            if (typeof timeElapsed === 'number') {
+              statGpu.textContent = `${(timeElapsed / 1e6).toFixed(2)} ms`;
+            }
+          }
+        } catch (e) { /* ignore retrieval errors */ }
+      }
+    }
+  } catch (e) { /* ignore */ }
 
   // Update stats accumulators
   const statsNow = performance.now();
@@ -362,6 +462,25 @@ function animate(): void {
     const rotDeg = `${(rot.x * 180/Math.PI).toFixed(1)}, ${(rot.y * 180/Math.PI).toFixed(1)}, ${(rot.z * 180/Math.PI).toFixed(1)}`;
     statCam.textContent = `Cam: pos(${pos.x.toFixed(2)}, ${pos.y.toFixed(2)}, ${pos.z.toFixed(2)}) rot(${rotDeg}) fov: ${camera.fov.toFixed(1)}`;
 
+    // device memory (coarse)
+    try {
+      // navigator.deviceMemory is in GB (approx) when available
+      const dm = (navigator as any).deviceMemory;
+      statMem.textContent = dm ? `${dm} GB` : `unknown`;
+    } catch (e) {
+      statMem.textContent = `unknown`;
+    }
+
+    // retargeter micro-profiling
+    if (retargeter && (retargeter as any).getRetargetStats) {
+      try {
+        const r = (retargeter as any).getRetargetStats();
+        statRet.textContent = `${r.last.toFixed(2)} ms (avg ${r.avg.toFixed(2)} ms, bones ${r.boneCount})`;
+      } catch (e) {
+        statRet.textContent = `--`;
+      }
+    }
+
     // reset window accumulators
   statsLastSampleTime = statsNow;
     statsAccumFrames = 0;
@@ -373,6 +492,11 @@ function animate(): void {
   fpsHistory[sparkIndex] = instantFps;
   frameHistory[sparkIndex] = frameMs;
   sparkIndex = (sparkIndex + 1) % SPARK_LEN;
+
+  // persist a small history occasionally
+  if (frames % 60 === 0) {
+    try { localStorage.setItem('ps_spark_fps', JSON.stringify(fpsHistory)); localStorage.setItem('ps_spark_frame', JSON.stringify(frameHistory)); } catch (e) {}
+  }
 
   // Draw sparklines (cheap)
   drawSparkline(sparkFps, fpsHistory, '#1f73ff');

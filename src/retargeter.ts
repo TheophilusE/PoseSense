@@ -23,6 +23,11 @@ export class Retargeter {
   private _va = new Vector3();
   private _vb = new Vector3();
   private _vr = new Vector3();
+  // Micro-profiling
+  private _retargetTimes: number[] = new Array(128).fill(0);
+  private _retargetIndex = 0;
+  private _lastRetargetMs = 0;
+  private _lastBoneCount = 0;
 
   // Server->Model joint name mapping (extend as needed)
   private mapName: (n: string) => string | null = (n: string) => {
@@ -154,6 +159,7 @@ export class Retargeter {
   }
 
   applyInterpolated(a: PoseFrame, b: PoseFrame, alphaIn: number): void {
+    const tStart = (typeof performance !== 'undefined') ? performance.now() : Date.now();
     const alpha = clamp(alphaIn, 0, 1);
 
     // Root pose
@@ -173,7 +179,8 @@ export class Retargeter {
     const jb = new Map<string, [number, number, number, number]>(b.joints.map(j => [j.name, j.rotation]));
 
     // Iterate through available joints
-    for (const [srvName, rotA] of ja.entries()) {
+  let boneCount = 0;
+  for (const [srvName, rotA] of ja.entries()) {
       // On first frame, log mapping results to help debug missing bones
       if (!this._loggedMappings) {
         const mb = this.findBoneByName(this.mapName(srvName) ?? srvName);
@@ -185,6 +192,7 @@ export class Retargeter {
 
       const bone = this.findBoneByName(tname);
       if (!bone) continue;
+  boneCount++;
 
       const rotB = jb.get(srvName) ?? rotA;
 
@@ -275,9 +283,26 @@ export class Retargeter {
 
     // Upload to GPU
     this.skeleton.update();
+
+    // record profiling info
+    const tEnd = (typeof performance !== 'undefined') ? performance.now() : Date.now();
+    const elapsed = tEnd - tStart;
+    this._lastRetargetMs = elapsed;
+    this._lastBoneCount = boneCount;
+    this._retargetTimes[this._retargetIndex] = elapsed;
+    this._retargetIndex = (this._retargetIndex + 1) % this._retargetTimes.length;
   }
 
   applyHold(f: PoseFrame): void {
     this.applyInterpolated(f, f, 0);
+  }
+
+  // Returns simple profiling stats for the retargeter (ms)
+  getRetargetStats() {
+    const times = this._retargetTimes.filter(v => v > 0);
+    if (times.length === 0) return { last: this._lastRetargetMs, avg: 0, min: 0, max: 0, boneCount: this._lastBoneCount };
+    let sum = 0; let min = Number.POSITIVE_INFINITY; let max = 0;
+    for (const t of times) { sum += t; min = Math.min(min, t); max = Math.max(max, t); }
+    return { last: this._lastRetargetMs, avg: sum / times.length, min, max, boneCount: this._lastBoneCount };
   }
 }

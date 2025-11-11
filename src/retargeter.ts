@@ -49,10 +49,19 @@ export class Retargeter {
       this.bonesByName.set(b.name, b);
     }
 
-    this.rootBone =
+    // Debug: list available bone names (helps detect naming mismatches)
+    try {
+      // eslint-disable-next-line no-console
+      console.log('Retargeter: skeleton bones:', Array.from(this.bonesByName.keys()).join(', '));
+    } catch (e) {
+      // ignore in non-browser environments
+    }
+
+    this.rootBone = (
       this.bonesByName.get('Hips') ??
       this.bonesByName.get('mixamorig:Hips') ??
-      this.skeleton.bones[0];
+      this.skeleton.bones[0]
+    )!;
 
     // Optional per-bone corrective quats for axis alignment
     if (options?.corrections) {
@@ -67,6 +76,30 @@ export class Retargeter {
       'LeftShoulder', 'LeftArm', 'LeftForeArm', 'RightShoulder', 'RightArm', 'RightForeArm'
     ];
     defaultNames.forEach(n => this.jointWeights.set(n, 1.0));
+  }
+
+  /**
+   * Find a bone by server target name using several fallback strategies:
+   *  - exact match
+   *  - prefixed (mixamorig:name)
+   *  - normalized compare (strip non-alphanum, lower-case)
+   */
+  private findBoneByName(tname: string): Bone | undefined {
+    const exact = this.bonesByName.get(tname);
+    if (exact) return exact;
+
+    const mixamo = this.bonesByName.get(`mixamorig:${tname}`);
+    if (mixamo) return mixamo;
+
+    const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const target = normalize(tname);
+    for (const [name, bone] of this.bonesByName.entries()) {
+      if (normalize(name) === target) return bone;
+    }
+    for (const [name, bone] of this.bonesByName.entries()) {
+      if (normalize(name).endsWith(target)) return bone;
+    }
+    return undefined;
   }
 
   applyInterpolated(a: PoseFrame, b: PoseFrame, alphaIn: number): void {
@@ -112,7 +145,7 @@ export class Retargeter {
       const desiredWorld = corr ? this._qb.copy(corr).multiply(qL) : qL.clone();
 
       // Get parent world quaternion (Object3D.getWorldQuaternion writes into target)
-      const parent = bone.parent as THREE.Object3D | null;
+      const parent = bone.parent as Object3D | null;
       if (parent) {
         parent.getWorldQuaternion(this._qr);
         // parent world inverse

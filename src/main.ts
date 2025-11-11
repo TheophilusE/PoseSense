@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import { SimpleSkeletonHelper, setWireframeForObject } from './utils/renderUtils.js';
+import { SimpleSkeletonHelper, setWireframeForObject, ServerSkeletonHelper } from './utils/renderUtils.js';
 
 import { PoseStream } from "./network.js";
 import { Retargeter } from "./retargeter.js";
@@ -256,7 +256,7 @@ const renderOptions = (() => {
     const raw = localStorage.getItem('ps_render_opts');
     if (raw) return JSON.parse(raw);
   } catch (e) { /* ignore */ }
-  return { shadows: true, debugSkeleton: false, showSkinnedMesh: true, wireframe: false };
+  return { shadows: true, debugSkeleton: false, showSkinnedMesh: true, wireframe: false, serverSkeleton: false };
 })();
 
 // Enable physically-correct lighting and soft shadows for a studio look
@@ -291,7 +291,8 @@ toolbar.innerHTML = `
     <div style="color:rgba(11,18,32,0.6)">Shadows</div><div><input id="opt-shadows" type="checkbox"></div>
     <div style="color:rgba(11,18,32,0.6)">Debug Skeleton</div><div><input id="opt-debug-skel" type="checkbox"></div>
     <div style="color:rgba(11,18,32,0.6)">Show Mesh</div><div><input id="opt-show-mesh" type="checkbox"></div>
-    <div style="color:rgba(11,18,32,0.6)">Wireframe</div><div><input id="opt-wireframe" type="checkbox"></div>
+      <div style="color:rgba(11,18,32,0.6)">Wireframe</div><div><input id="opt-wireframe" type="checkbox"></div>
+      <div style="color:rgba(11,18,32,0.6)">Server Skeleton</div><div><input id="opt-server-skel" type="checkbox"></div>
   </div>
 `;
 document.body.appendChild(toolbar);
@@ -300,6 +301,7 @@ const optShadows = document.getElementById('opt-shadows') as HTMLInputElement | 
 const optDebugSkel = document.getElementById('opt-debug-skel') as HTMLInputElement | null;
 const optShowMesh = document.getElementById('opt-show-mesh') as HTMLInputElement | null;
 const optWireframe = document.getElementById('opt-wireframe') as HTMLInputElement | null;
+const optServerSkel = document.getElementById('opt-server-skel') as HTMLInputElement | null;
 const renderIndicator = document.getElementById('render-indicator') as HTMLDivElement | null;
 
 // initialize checkboxes from persisted options
@@ -307,6 +309,7 @@ if (optShadows) optShadows.checked = !!renderOptions.shadows;
 if (optDebugSkel) optDebugSkel.checked = !!renderOptions.debugSkeleton;
 if (optShowMesh) optShowMesh.checked = !!renderOptions.showSkinnedMesh;
 if (optWireframe) optWireframe.checked = !!renderOptions.wireframe;
+if (optServerSkel) optServerSkel.checked = !!renderOptions.serverSkeleton;
 
 function updateRenderIndicator() {
   if (!renderIndicator) return;
@@ -314,6 +317,7 @@ function updateRenderIndicator() {
   const flags: string[] = [];
   if (renderOptions.shadows) flags.push('Shadows');
   if (renderOptions.wireframe) flags.push('Wireframe');
+  if (renderOptions.serverSkeleton) flags.push('ServerSkel');
   renderIndicator.textContent = `${mode}${flags.length ? ' · ' + flags.join(', ') : ''}`;
 }
 
@@ -322,6 +326,7 @@ function hookOptionInputs() {
   if (optDebugSkel) optDebugSkel.addEventListener('change', () => { renderOptions.debugSkeleton = optDebugSkel.checked; persistRenderOptions(); applyRenderOptions(); updateRenderIndicator(); });
   if (optShowMesh) optShowMesh.addEventListener('change', () => { renderOptions.showSkinnedMesh = optShowMesh.checked; persistRenderOptions(); applyRenderOptions(); updateRenderIndicator(); });
   if (optWireframe) optWireframe.addEventListener('change', () => { renderOptions.wireframe = optWireframe.checked; persistRenderOptions(); applyRenderOptions(); updateRenderIndicator(); });
+  if (optServerSkel) optServerSkel.addEventListener('change', () => { renderOptions.serverSkeleton = optServerSkel.checked; persistRenderOptions(); applyRenderOptions(); updateRenderIndicator(); });
 }
 hookOptionInputs();
 updateRenderIndicator();
@@ -391,6 +396,8 @@ let retargeter: Retargeter | null = null;
 let skinned: THREE.SkinnedMesh | null = null;
 let skeletonHelper: any = null;
 let modelRoot: THREE.Object3D | null = null;
+let serverSkeletonHelper: ServerSkeletonHelper | null = null;
+let modelBonesByName: Map<string, THREE.Object3D> | null = null;
 
 function persistRenderOptions() {
   try { localStorage.setItem('ps_render_opts', JSON.stringify(renderOptions)); } catch (e) { }
@@ -420,6 +427,8 @@ function applyRenderOptions() {
 
     // Wireframe: apply to entire model (but don't change visibility)
     setWireframeForObject(modelRoot, !!renderOptions.wireframe);
+    // Server skeleton helper visibility
+    if (serverSkeletonHelper) serverSkeletonHelper.visible = !!renderOptions.serverSkeleton;
   }
 }
 
@@ -460,6 +469,20 @@ function applyRenderOptions() {
       }
       // set wireframe if requested
       setWireframeForObject(modelRoot!, !!renderOptions.wireframe);
+      // Build a quick lookup of model bones by several key formats so the
+      // ServerSkeletonHelper can place joints at the model's bone positions.
+      try {
+        const map = new Map<string, THREE.Object3D>();
+        if ((skinned as any).skeleton && Array.isArray((skinned as any).skeleton.bones)) {
+          for (const b of (skinned as any).skeleton.bones as THREE.Object3D[]) {
+            map.set(b.name, b);
+            map.set(`mixamorig:${b.name}`, b);
+            const norm = b.name.toLowerCase().replace(/[^a-z0-9]/g, '');
+            map.set(norm, b);
+          }
+        }
+        modelBonesByName = map;
+      } catch (e) { modelBonesByName = null; }
       // Apply full render options to modelRoot
       applyRenderOptions();
     }
@@ -518,16 +541,32 @@ function animate(): void {
     } catch (e) { /* ignore */ }
   }
 
-  if (retargeter) {
-    const sample = stream.pollInterpolated();
-    if (sample) {
-      if (sample.kind === 'interp') {
-        retargeter.applyInterpolated(sample.a, sample.b, sample.alpha);
-      } else {
-        retargeter.applyHold(sample.data);
-      }
+  const sample = stream.pollInterpolated();
+  if (retargeter && sample) {
+    if (sample.kind === 'interp') {
+      retargeter.applyInterpolated(sample.a, sample.b, sample.alpha);
+    } else {
+      retargeter.applyHold(sample.data);
     }
   }
+
+  // Update server skeleton overlay (lazy create)
+  try {
+    if (sample) {
+      const frameForViz = sample.kind === 'interp' ? sample.b : sample.data;
+      if (!serverSkeletonHelper) {
+        const names = Array.isArray(frameForViz.joints) ? frameForViz.joints.map((j: any) => j.name) : [];
+        if (names.length) {
+          serverSkeletonHelper = new ServerSkeletonHelper(names);
+          serverSkeletonHelper.visible = !!renderOptions.serverSkeleton;
+          scene.add(serverSkeletonHelper.mesh);
+        }
+      }
+      if (serverSkeletonHelper) {
+        serverSkeletonHelper.updateFromPose(frameForViz, modelBonesByName ?? undefined);
+      }
+    }
+  } catch (e) { /* ignore visualization errors */ }
 
   // Update network overlay with latest server skeleton/frame metadata
   try {

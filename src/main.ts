@@ -39,14 +39,76 @@ const statusEl = document.getElementById('status')!;
 const fpsEl = document.getElementById('fps')!;
 const netEl = document.getElementById('net')!;
 
+// Performance / debug stats panel
+const statsEl = document.createElement('div');
+statsEl.id = 'stats';
+statsEl.style.position = 'fixed';
+statsEl.style.right = '12px';
+statsEl.style.top = '12px';
+statsEl.style.padding = '12px 14px';
+// Glassy 'frosted glass' panel — modern sleek typography + layout
+statsEl.style.background = 'linear-gradient(180deg, rgba(255,255,255,0.72), rgba(255,255,255,0.48))';
+statsEl.style.border = '1px solid rgba(255,255,255,0.6)';
+statsEl.style.color = 'rgba(11,18,32,0.92)';
+statsEl.style.fontFamily = "Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial";
+statsEl.style.width = '220px';
+statsEl.style.fontSize = '13px';
+statsEl.style.lineHeight = '1.3';
+statsEl.style.borderRadius = '12px';
+statsEl.style.boxShadow = '0 12px 40px rgba(16,24,32,0.12)';
+// blur backdrop for glass effect (with webkit fallback)
+(statsEl.style as any).backdropFilter = 'blur(10px) saturate(120%)';
+(statsEl.style as any).webkitBackdropFilter = 'blur(10px) saturate(120%)';
+statsEl.style.zIndex = '9999';
+statsEl.innerHTML = `
+<div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:8px">
+  <div style="font-weight:700;font-size:14px">Render</div>
+  <div style="font-size:11px;color:rgba(11,18,32,0.55);letter-spacing:0.6px">stats</div>
+</div>
+<div style="display:grid;grid-template-columns:1fr auto;gap:6px 12px;align-items:center">
+  <div style="color:rgba(11,18,32,0.6)">FPS</div><div id="stat-fps" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;font-weight:700">--</div>
+  <div style="color:rgba(11,18,32,0.6)">Frame</div><div id="stat-frame" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;font-weight:700">-- ms</div>
+  <div style="color:rgba(11,18,32,0.6)">Min / Max / Avg</div><div id="stat-minmax" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace">-- / -- / --</div>
+  <div style="color:rgba(11,18,32,0.6)">Triangles</div><div id="stat-tris" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace">--</div>
+  <div style="color:rgba(11,18,32,0.6)">Draws</div><div id="stat-draw" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace">--</div>
+  <div style="color:rgba(11,18,32,0.6)">Camera</div><div id="stat-cam" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace">pos(--)</div>
+</div>
+`;
+document.body.appendChild(statsEl);
+const statFps = document.getElementById('stat-fps')!;
+const statFrame = document.getElementById('stat-frame')!;
+const statMinMax = document.getElementById('stat-minmax')!;
+const statTris = document.getElementById('stat-tris')!;
+const statDraw = document.getElementById('stat-draw')!;
+const statCam = document.getElementById('stat-cam')!;
+
+// Stats accumulators
+let statsCount = 0;
+let statsAvg = 0; // average frame ms
+let statsMin = Number.POSITIVE_INFINITY;
+let statsMax = 0;
+let statsLastSampleTime = performance.now();
+let statsInterval = 500; // ms between UI updates
+let statsAccumFrames = 0;
+let statsAccumTime = 0;
+
 // Renderer/scene/camera/controls (same as before)
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 document.body.appendChild(renderer.domElement);
 
+// Enable physically-correct lighting and soft shadows for a studio look
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+(renderer as any).physicallyCorrectLights = true;
+renderer.outputColorSpace = (THREE as any).SRGBColorSpace ?? (THREE as any).sRGBEncoding; // compatibility
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0e0f12);
+// Bright, neutral studio background
+scene.background = new THREE.Color(0xf4f7fb);
 
 const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.01, 100);
 camera.position.set(2.5, 1.6, 2.8);
@@ -56,19 +118,53 @@ controls.target.set(0, 1.0, 0);
 controls.enableDamping = true;
 
 // Lights/ground (same as before)
-const hemi = new THREE.HemisphereLight(0xffffff, 0x222233, 0.8);
+// Studio lighting: subtle sky/fill, strong key, and a rim light
+const hemi = new THREE.HemisphereLight(0x9ecfff, 0x444444, 0.6);
 scene.add(hemi);
-const dir = new THREE.DirectionalLight(0xffffff, 0.8);
-dir.position.set(3, 5, 2);
-scene.add(dir);
 
-const ground = new THREE.Mesh(
-  new THREE.PlaneGeometry(20, 20),
-  new THREE.MeshStandardMaterial({ color: 0x1a1f2b, roughness: 1 })
-);
+// Key directional light (soft shadow)
+const key = new THREE.DirectionalLight(0xffffff, 1.0);
+key.position.set(2.5, 6, 4);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.left = -5;
+key.shadow.camera.right = 5;
+key.shadow.camera.top = 5;
+key.shadow.camera.bottom = -5;
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 20;
+key.shadow.bias = -0.0005;
+scene.add(key);
+
+// Fill light to wash shadows a bit
+const fill = new THREE.AmbientLight(0xffffff, 0.35);
+scene.add(fill);
+
+// Rim/backlight to separate the model from the background
+const rim = new THREE.SpotLight(0xffffff, 0.6, 0, Math.PI / 6, 0.6);
+rim.position.set(-3, 4, -2);
+rim.castShadow = false;
+scene.add(rim);
+
+// Ground: light, slightly glossy for subtle reflections
+const groundMat = new THREE.MeshStandardMaterial({ color: 0xf6f7f9, roughness: 0.5, metalness: 0 });
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), groundMat);
 ground.rotation.x = -Math.PI / 2;
 ground.receiveShadow = true;
+ground.position.y = 0;
 scene.add(ground);
+
+// Backdrop: large curved paper-like plane behind the model
+const backdropMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.8, metalness: 0, side: THREE.DoubleSide });
+const backdrop = new THREE.Mesh(new THREE.PlaneGeometry(40, 18), backdropMat);
+backdrop.position.set(0, 4.5, -6);
+scene.add(backdrop);
+
+// Subtle grid helper on the ground for studio reference
+const grid = new THREE.GridHelper(20, 40, 0xe6eef6, 0xe6eef6);
+grid.material.opacity = 0.6;
+(grid.material as THREE.Material).transparent = true;
+scene.add(grid);
 
 // Load Y-Bot FBX
 let retargeter: Retargeter | null = null;
@@ -89,8 +185,8 @@ let retargeter: Retargeter | null = null;
       return;
     }
 
-    // Reset to bind pose
-    skinned.skeleton.pose();
+  // Reset to bind pose
+  (skinned as THREE.SkinnedMesh).skeleton.pose();
 
     scene.add(model);
 
@@ -132,6 +228,40 @@ function animate(): void {
   }
 
   renderer.render(scene, camera);
+
+  // Update stats accumulators
+  const statsNow = performance.now();
+  const frameMs = dt * 1000.0;
+  statsAccumFrames += 1;
+  statsAccumTime += frameMs;
+  statsCount += 1;
+  // incremental avg
+  statsAvg += (frameMs - statsAvg) / statsCount;
+  statsMin = Math.min(statsMin, frameMs);
+  statsMax = Math.max(statsMax, frameMs);
+
+  // Periodically update the UI
+  if (statsNow - statsLastSampleTime >= statsInterval) {
+    const avgMsWindow = statsAccumFrames ? (statsAccumTime / statsAccumFrames) : 0;
+    const fpsWindow = avgMsWindow > 0 ? (1000.0 / avgMsWindow) : 0;
+    statFps.textContent = `FPS: ${fpsWindow.toFixed(1)}`;
+    statFrame.textContent = `Frame ms: ${avgMsWindow.toFixed(2)} ms`;
+    statMinMax.textContent = `min: ${statsMin.toFixed(2)} ms / max: ${statsMax.toFixed(2)} ms / avg: ${statsAvg.toFixed(2)} ms`;
+    // renderer.info contains triangles and draw calls
+    const info = renderer.info;
+    statTris.textContent = `Triangles: ${info.render.triangles ?? 0}`;
+    statDraw.textContent = `Draw calls: ${info.render.calls ?? 0}`;
+    // camera info
+    const pos = camera.position;
+    const rot = camera.rotation;
+    const rotDeg = `${(rot.x * 180/Math.PI).toFixed(1)}, ${(rot.y * 180/Math.PI).toFixed(1)}, ${(rot.z * 180/Math.PI).toFixed(1)}`;
+    statCam.textContent = `Cam: pos(${pos.x.toFixed(2)}, ${pos.y.toFixed(2)}, ${pos.z.toFixed(2)}) rot(${rotDeg}) fov: ${camera.fov.toFixed(1)}`;
+
+    // reset window accumulators
+  statsLastSampleTime = statsNow;
+    statsAccumFrames = 0;
+    statsAccumTime = 0;
+  }
 
   frames++;
   const now = performance.now();

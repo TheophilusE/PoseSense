@@ -1,5 +1,5 @@
 // src/retargeter.ts
-import { Quaternion, SkinnedMesh, Vector3 } from 'three';
+import { Quaternion, SkinnedMesh, Vector3, Bone, Object3D } from 'three';
 import type { PoseFrame } from './types.js';
 import { quatFromArray, vec3FromArray, slerpQuat, lerpVec3, clamp } from './utils.js';
 
@@ -8,10 +8,10 @@ type BoneMap = Record<string, string>;
 export class Retargeter {
   private mesh: SkinnedMesh;
   private skeleton: SkinnedMesh['skeleton'];
-  private bonesByName = new Map<string, THREE.Bone>();
+  private bonesByName = new Map<string, Bone>();
   private corrections = new Map<string, Quaternion>();
   private jointWeights = new Map<string, number>();
-  private rootBone: THREE.Bone;
+  private rootBone: Bone;
   private rootScale: number;
 
   // Temp objects
@@ -105,15 +105,39 @@ export class Retargeter {
       const qL = slerpQuat(this._qa, qA, qB, alpha);
 
       const corr = this.corrections.get(tname);
-      const finalLocal = corr ? this._qb.copy(corr).multiply(qL) : qL;
 
-      const w = this.jointWeights.get(tname) ?? 1.0;
-      if (w >= 1.0) {
-        bone.quaternion.copy(finalLocal);
-      } else if (w <= 0) {
-        // leave as-is
+      // Server quaternions are provided in a common/world-like frame.
+      // Convert desired world rotation -> bone local rotation by
+      // local = parentWorld^{-1} * desiredWorld
+      const desiredWorld = corr ? this._qb.copy(corr).multiply(qL) : qL.clone();
+
+      // Get parent world quaternion (Object3D.getWorldQuaternion writes into target)
+      const parent = bone.parent as THREE.Object3D | null;
+      if (parent) {
+        parent.getWorldQuaternion(this._qr);
+        // parent world inverse
+        this._qr.invert();
+        // local = parentInv * desiredWorld
+        const local = this._qa.copy(this._qr).multiply(desiredWorld);
+
+        const w = this.jointWeights.get(tname) ?? 1.0;
+        if (w >= 1.0) {
+          bone.quaternion.copy(local);
+        } else if (w <= 0) {
+          // leave as-is
+        } else {
+          bone.quaternion.slerp(local, w);
+        }
       } else {
-        bone.quaternion.slerp(finalLocal, w);
+        // No parent (shouldn't usually happen) — apply directly
+        const w = this.jointWeights.get(tname) ?? 1.0;
+        if (w >= 1.0) {
+          bone.quaternion.copy(desiredWorld);
+        } else if (w <= 0) {
+          // leave as-is
+        } else {
+          bone.quaternion.slerp(desiredWorld, w);
+        }
       }
     }
 

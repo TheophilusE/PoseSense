@@ -13,6 +13,7 @@ export class Retargeter {
   private jointWeights = new Map<string, number>();
   private rootBone: Bone;
   private rootScale: number;
+  private _loggedMappings = false;
 
   // Temp objects
   private _qa = new Quaternion();
@@ -58,8 +59,8 @@ export class Retargeter {
     }
 
     this.rootBone = (
-      this.bonesByName.get('Hips') ??
-      this.bonesByName.get('mixamorig:Hips') ??
+      this.findBoneByName('Hips') ??
+      this.findBoneByName('mixamorigHips') ??
       this.skeleton.bones[0]
     )!;
 
@@ -123,12 +124,16 @@ export class Retargeter {
 
     // Iterate through available joints
     for (const [srvName, rotA] of ja.entries()) {
+      // On first frame, log mapping results to help debug missing bones
+      if (!this._loggedMappings) {
+        const mb = this.findBoneByName(this.mapName(srvName) ?? srvName);
+        // eslint-disable-next-line no-console
+        console.log(`Retargeter mapping: ${srvName} -> ${mb ? mb.name : '<missing>'}`);
+      }
       const tname = this.mapName(srvName);
       if (!tname) continue;
 
-      const bone =
-        this.bonesByName.get(tname) ??
-        this.bonesByName.get(`mixamorig:${tname}`);
+      const bone = this.findBoneByName(tname);
       if (!bone) continue;
 
       const rotB = jb.get(srvName) ?? rotA;
@@ -173,6 +178,8 @@ export class Retargeter {
         }
       }
     }
+
+  if (!this._loggedMappings) this._loggedMappings = true;
 
     // Upload to GPU
     this.skeleton.update();

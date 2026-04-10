@@ -27,9 +27,14 @@ Notes on coordinate frames:
 
 from typing import Dict, Tuple, List
 import numpy as np
-from posemath import (
-    normalize, quat_identity, quat_from_two_vectors, quat_mul,
-)
+try:
+    from .posemath import (
+        normalize, quat_identity, quat_from_two_vectors, quat_mul,
+    )
+except ImportError:  # Allows running this file directly from backend/.
+    from posemath import (
+        normalize, quat_identity, quat_from_two_vectors, quat_mul,
+    )
 
 # --- Canonical joint list ----------------------------------------------------
 CANONICAL_JOINTS: List[str] = [

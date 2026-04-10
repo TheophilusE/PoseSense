@@ -1,33 +1,17 @@
 {
-  "name": "posesense",
+  "name": "posesense-workspace",
   "version": "1.0.0",
-  "description": "Three.js + TypeScript + Vite project for Mixamo FBX and pose retargeting",
-  "type": "module",
+  "private": true,
+  "description": "Workspace scripts for PoseSense backend and frontend",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview",
-    "test": "echo \"No tests configured\" && exit 0"
-  },
-  "keywords": [
-    "three.js",
-    "vite",
-    "typescript",
-    "mixamo",
-    "fbx",
-    "pose"
-  ],
-  "author": "",
-  "license": "ISC",
-  "dependencies": {
-    "three": "^0.180.0",
-    "three-stdlib": "^2.36.0",
-    "vite": "^7.1.5"
+    "dev": "concurrently -n backend,frontend -c green,cyan \"npm run backend:dev\" \"npm run frontend:dev\"",
+    "backend:dev": "python -m uvicorn backend.server:app --reload --host 127.0.0.1 --port 8000",
+    "frontend:dev": "npm --prefix frontend run dev",
+    "build": "npm run frontend:build",
+    "frontend:build": "npm --prefix frontend run build",
+    "frontend:preview": "npm --prefix frontend run preview"
   },
   "devDependencies": {
-    "@types/node": "^20.11.30",
-    "@types/three": "^0.180.0",
-    "ts-node": "^10.9.2",
-    "typescript": "^5.9.2"
+    "concurrently": "^9.0.1"
   }
 }

@@ -1,18 +1,35 @@
 import asyncio
+import os
+import logging
 import uvicorn
-from typing import Set
+from typing import Optional, Set
 from contextlib import asynccontextmanager
 from fastapi.responses import HTMLResponse
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
-from processor import PoseProcessor, select_best_camera
+try:
+    from .processor import PoseProcessor, select_best_camera
+except ImportError:  # Allows running this file directly from backend/.
+    from processor import PoseProcessor, select_best_camera
+
+logger = logging.getLogger(__name__)
 
 clients: Set[WebSocket] = set()
-pose: PoseProcessor     = PoseProcessor(source=select_best_camera(), fps=30.0)
+pose: Optional[PoseProcessor] = None
+
+
+def init_pose_processor() -> Optional[PoseProcessor]:
+    cap = select_best_camera()
+    if cap is None:
+        logger.warning("No camera source available; backend will keep retrying.")
+        return None
+    return PoseProcessor(source=cap, fps=30.0)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global pose
     # Startup
+    pose = init_pose_processor()
     task = asyncio.create_task(producer())
     yield
     # Shutdown
@@ -40,6 +57,15 @@ def index():
 </html>
 """)
 
+
+@app.get("/health")
+def health():
+    return {
+        "status": "ok",
+        "clients": len(clients),
+        "pose_ready": pose is not None,
+    }
+
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     await ws.accept()
@@ -52,8 +78,18 @@ async def ws_endpoint(ws: WebSocket):
         clients.discard(ws)
 
 async def producer():
+    global pose
     frame_idx = 0
     while True:
+        if not clients:
+            await asyncio.sleep(0.01)
+            continue
+
+        if pose is None:
+            pose = init_pose_processor()
+            await asyncio.sleep(0.5)
+            continue
+
         payload = pose.process(frame_idx)
         frame_idx += 1
         if payload:
@@ -73,4 +109,9 @@ except Exception:
     def json_dumps(obj): return json.dumps(obj, separators=(",", ":"))
 
 if __name__ == "__main__":
-    uvicorn.run("server:app", host="localhost", port=8000, reload=False)
+    uvicorn.run(
+        "backend.server:app",
+        host=os.getenv("POSESENSE_HOST", "127.0.0.1"),
+        port=int(os.getenv("POSESENSE_PORT", "8000")),
+        reload=os.getenv("POSESENSE_RELOAD", "0") == "1",
+    )

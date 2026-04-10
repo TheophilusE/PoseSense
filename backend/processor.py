@@ -2,8 +2,12 @@ import time
 import cv2
 import numpy as np
 import mediapipe as mp
-from posemath import OneEuro
-from canonical import landmarks_to_canonical
+try:
+    from .posemath import OneEuro
+    from .canonical import landmarks_to_canonical
+except ImportError:  # Allows running this file directly from backend/.
+    from posemath import OneEuro
+    from canonical import landmarks_to_canonical
 
 # Define resolution tiers
 RESOLUTIONS = [
@@ -66,7 +70,7 @@ def select_best_camera(max_devices=5):
 
 class PoseProcessor:
     def __init__(self, source: cv2.VideoCapture = None, fps: float =30.0):
-        self.cap = source
+        self.cap = source if source is not None and source.isOpened() else None
         self.fps = fps
         self.pose = mp.solutions.pose.Pose(
             static_image_mode=False,
@@ -106,6 +110,8 @@ class PoseProcessor:
         return np.array(pts, dtype=np.float64)
 
     def read_frame(self):
+        if self.cap is None:
+            return None, None
         ok, frame = self.cap.read()
         if not ok:
             return None, None

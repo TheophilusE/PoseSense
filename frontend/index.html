@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1"
+    />
+    <title>Y-Bot Live Retarget (TS)</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #0e0f12; color: #d8dee9; }
+      #overlay { position: absolute; top: 10px; left: 10px; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      .pill { padding: 4px 8px; border-radius: 999px; background: #1f2430; display: inline-block; margin-right: 8px; }
+      canvas { display: block; }
+      a { color: #88c0d0; text-decoration: none; }
+    </style>
+  </head>
+  <body>
+    <div id="overlay">
+      <span class="pill" id="status">Booting…</span>
+      <span class="pill" id="fps">Render: —</span>
+      <span class="pill" id="net">Net: —</span>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

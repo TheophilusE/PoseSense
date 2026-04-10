@@ -1,5 +1,8 @@
 import numpy as np
-from posemath import (normalize, quat_identity, quat_from_two_vectors, quat_mul, quat_conjugate, swing_twist_decomposition)
+try:
+    from .posemath import (normalize, quat_identity, quat_from_two_vectors, quat_mul, quat_conjugate, swing_twist_decomposition)
+except ImportError:  # Allows running this file directly from backend/.
+    from posemath import (normalize, quat_identity, quat_from_two_vectors, quat_mul, quat_conjugate, swing_twist_decomposition)
 
 # MediaPipe indices for BlazePose (subset)
 LM = {

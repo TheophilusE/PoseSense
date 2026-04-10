@@ -364,6 +364,26 @@ const cameraStateEl = document.getElementById('camera-state') as HTMLSpanElement
 const cameraFeedUrl = `${location.protocol}//${location.hostname}:8000/camera.mjpeg`;
 let latestPoseLandmarks2d: PoseLandmark2D[] | null = null;
 let cameraStreamActive = false;
+let cameraRetryTimer: number | null = null;
+
+function clearCameraRetry() {
+  if (cameraRetryTimer !== null) {
+    window.clearTimeout(cameraRetryTimer);
+    cameraRetryTimer = null;
+  }
+}
+
+function scheduleCameraRetry(delayMs = 1200) {
+  if (!renderOptions.cameraFeed || !cameraStreamActive || !cameraFeedEl) return;
+  if (cameraRetryTimer !== null) return;
+
+  cameraRetryTimer = window.setTimeout(() => {
+    cameraRetryTimer = null;
+    if (!renderOptions.cameraFeed || !cameraStreamActive || !cameraFeedEl) return;
+    if (cameraStateEl) cameraStateEl.textContent = 'reconnecting...';
+    cameraFeedEl.src = `${cameraFeedUrl}?t=${Date.now()}`;
+  }, delayMs);
+}
 
 function resizeCameraOverlayCanvas() {
   if (!cameraOverlayEl || !cameraFeedEl) return;
@@ -383,12 +403,14 @@ function setCameraFeedEnabled(enabled: boolean) {
 
   if (enabled && !cameraStreamActive) {
     cameraStreamActive = true;
+    clearCameraRetry();
     cameraStateEl.textContent = 'connecting...';
     cameraFeedEl.src = `${cameraFeedUrl}?t=${Date.now()}`;
   }
 
   if (!enabled && cameraStreamActive) {
     cameraStreamActive = false;
+    clearCameraRetry();
     cameraFeedEl.src = '';
     cameraStateEl.textContent = 'off';
   }
@@ -432,11 +454,13 @@ function drawCameraPoseOverlay() {
 
 if (cameraFeedEl) {
   cameraFeedEl.addEventListener('load', () => {
+    clearCameraRetry();
     if (cameraStateEl) cameraStateEl.textContent = 'live';
     resizeCameraOverlayCanvas();
   });
   cameraFeedEl.addEventListener('error', () => {
     if (cameraStateEl) cameraStateEl.textContent = 'error';
+    scheduleCameraRetry();
   });
 }
 

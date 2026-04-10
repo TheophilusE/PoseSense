@@ -1,7 +1,7 @@
 import os
 import time
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 from urllib.error import URLError
 from urllib.request import urlretrieve
 
@@ -31,6 +31,9 @@ DEFAULT_POSE_MODEL_URL = (
 DEFAULT_POSE_MODEL_PATH = Path(__file__).resolve().parent / "models" / "pose_landmarker_full.task"
 _MODEL_DOWNLOAD_ATTEMPTED = False
 _MODEL_DOWNLOAD_ERROR: Optional[str] = None
+
+STREAM_WIDTH = int(os.getenv("POSESENSE_STREAM_WIDTH", "640"))
+STREAM_JPEG_QUALITY = int(os.getenv("POSESENSE_STREAM_JPEG_QUALITY", "70"))
 
 
 def _resolve_pose_model_path() -> str:
@@ -148,6 +151,8 @@ class PoseProcessor:
         self.fps = fps
         self.pose = _create_pose_landmarker()
         self._last_ts_ms = 0
+        self._latest_camera_jpeg: Optional[bytes] = None
+        self._latest_pose_landmarks_2d: Optional[List[List[float]]] = None
 
         # Filters for stability
         self.filter_pos = OneEuro(freq=fps, min_cutoff=1.5, beta=0.03, dcutoff=1.0)
@@ -189,6 +194,46 @@ class PoseProcessor:
         self._last_ts_ms = ts_ms
         return ts_ms
 
+    def _cache_camera_stream_data(self, frame: np.ndarray, results) -> None:
+        h, w = frame.shape[:2]
+        if w <= 0 or h <= 0:
+            return
+
+        scale = min(1.0, STREAM_WIDTH / float(w)) if STREAM_WIDTH > 0 else 1.0
+        if scale < 1.0:
+            stream_frame = cv2.resize(frame, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+        else:
+            stream_frame = frame
+
+        ok, jpeg = cv2.imencode(
+            ".jpg",
+            stream_frame,
+            [int(cv2.IMWRITE_JPEG_QUALITY), int(np.clip(STREAM_JPEG_QUALITY, 30, 95))],
+        )
+        if ok:
+            self._latest_camera_jpeg = jpeg.tobytes()
+
+        pose_landmarks = getattr(results, "pose_landmarks", None)
+        if not pose_landmarks:
+            self._latest_pose_landmarks_2d = None
+            return
+
+        first_pose = pose_landmarks[0]
+        if not first_pose:
+            self._latest_pose_landmarks_2d = None
+            return
+
+        self._latest_pose_landmarks_2d = [
+            [float(lm.x), float(lm.y), float(getattr(lm, "visibility", 1.0))]
+            for lm in first_pose
+        ]
+
+    def get_latest_camera_jpeg(self) -> Optional[bytes]:
+        return self._latest_camera_jpeg
+
+    def get_latest_pose_landmarks_2d(self) -> Optional[List[List[float]]]:
+        return self._latest_pose_landmarks_2d
+
     def read_frame(self):
         if self.cap is None:
             return None, None
@@ -199,6 +244,7 @@ class PoseProcessor:
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
         res = self.pose.detect_for_video(mp_image, self._next_timestamp_ms())
+        self._cache_camera_stream_data(frame, res)
         lmk_world = self._mp_landmarks_to_world(res)
         return lmk_world, frame
 
@@ -212,6 +258,10 @@ class PoseProcessor:
         lmk_s = flat_s.reshape(lmk.shape)
 
         joints, root_pos, root_rot, meta = landmarks_to_canonical(lmk_s)
+        pose_landmarks_2d = self.get_latest_pose_landmarks_2d()
+        if pose_landmarks_2d:
+            meta["pose_landmarks_2d"] = pose_landmarks_2d
+
         # Compose payload
         payload = {
             "type": "poseFrame",

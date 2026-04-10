@@ -50,6 +50,12 @@ Health check:
 curl http://127.0.0.1:8000/health
 ```
 
+Live camera stream:
+
+```bash
+http://127.0.0.1:8000/camera.mjpeg
+```
+
 ## Frontend Setup
 
 From the repository root:
@@ -102,5 +108,6 @@ npm run preview
 1. Start backend on port `8000`.
 2. Start frontend (Vite defaults to `5173`).
 3. Open the frontend URL shown by Vite.
+4. Use the Render panel toggles for `Camera Feed` and `ML Pose Overlay`.
 
 The frontend connects to `ws://<hostname>:8000/ws` for live pose frames.

@@ -41,6 +41,20 @@ const statusEl = document.getElementById('status')!;
 const fpsEl = document.getElementById('fps')!;
 const netEl = document.getElementById('net')!;
 
+type PoseLandmark2D = [number, number, number];
+const POSE_CONNECTIONS: Array<[number, number]> = [
+  [0, 1], [1, 2], [2, 3], [3, 7],
+  [0, 4], [4, 5], [5, 6], [6, 8],
+  [9, 10],
+  [11, 12],
+  [11, 13], [13, 15], [15, 17], [15, 19], [15, 21], [17, 19],
+  [12, 14], [14, 16], [16, 18], [16, 20], [16, 22], [18, 20],
+  [11, 23], [12, 24], [23, 24],
+  [23, 25], [24, 26], [25, 27], [26, 28],
+  [27, 29], [28, 30], [29, 31], [30, 32],
+  [27, 31], [28, 32]
+];
+
 // Performance / debug stats panel
 const statsEl = document.createElement('div');
 statsEl.id = 'stats';
@@ -252,12 +266,22 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 document.body.appendChild(renderer.domElement);
 
 // Render options (persisted)
+const defaultRenderOptions = {
+  shadows: true,
+  debugSkeleton: false,
+  showSkinnedMesh: true,
+  wireframe: false,
+  serverSkeleton: false,
+  cameraFeed: true,
+  mlPoseOverlay: true,
+};
+
 const renderOptions = (() => {
   try {
     const raw = localStorage.getItem('ps_render_opts');
-    if (raw) return JSON.parse(raw);
+    if (raw) return { ...defaultRenderOptions, ...JSON.parse(raw) };
   } catch (e) { /* ignore */ }
-  return { shadows: true, debugSkeleton: false, showSkinnedMesh: true, wireframe: false, serverSkeleton: false };
+  return { ...defaultRenderOptions };
 })();
 
 // Enable physically-correct lighting and soft shadows for a studio look
@@ -294,6 +318,8 @@ toolbar.innerHTML = `
     <div style="color:rgba(11,18,32,0.6)">Show Mesh</div><div><input id="opt-show-mesh" type="checkbox"></div>
       <div style="color:rgba(11,18,32,0.6)">Wireframe</div><div><input id="opt-wireframe" type="checkbox"></div>
       <div style="color:rgba(11,18,32,0.6)">Server Skeleton</div><div><input id="opt-server-skel" type="checkbox"></div>
+      <div style="color:rgba(11,18,32,0.6)">Camera Feed</div><div><input id="opt-camera-feed" type="checkbox"></div>
+      <div style="color:rgba(11,18,32,0.6)">ML Pose Overlay</div><div><input id="opt-ml-overlay" type="checkbox"></div>
   </div>
 `;
 document.body.appendChild(toolbar);
@@ -303,7 +329,116 @@ const optDebugSkel = document.getElementById('opt-debug-skel') as HTMLInputEleme
 const optShowMesh = document.getElementById('opt-show-mesh') as HTMLInputElement | null;
 const optWireframe = document.getElementById('opt-wireframe') as HTMLInputElement | null;
 const optServerSkel = document.getElementById('opt-server-skel') as HTMLInputElement | null;
+const optCameraFeed = document.getElementById('opt-camera-feed') as HTMLInputElement | null;
+const optMlOverlay = document.getElementById('opt-ml-overlay') as HTMLInputElement | null;
 const renderIndicator = document.getElementById('render-indicator') as HTMLDivElement | null;
+
+const cameraPanel = document.createElement('div');
+cameraPanel.id = 'camera-panel';
+cameraPanel.style.position = 'fixed';
+cameraPanel.style.left = '12px';
+cameraPanel.style.bottom = '12px';
+cameraPanel.style.width = '360px';
+cameraPanel.style.maxWidth = 'calc(100vw - 24px)';
+cameraPanel.style.background = 'rgba(14,16,24,0.76)';
+cameraPanel.style.border = '1px solid rgba(255,255,255,0.2)';
+cameraPanel.style.borderRadius = '10px';
+cameraPanel.style.padding = '8px';
+cameraPanel.style.backdropFilter = 'blur(6px)';
+cameraPanel.style.zIndex = '10001';
+cameraPanel.innerHTML = `
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;color:#e5e9f0;font:12px/1.3 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;">
+    <span>Live Camera</span>
+    <span id="camera-state">connecting...</span>
+  </div>
+  <div style="position:relative;width:100%;aspect-ratio:16/9;overflow:hidden;border-radius:8px;background:#10131b;">
+    <img id="camera-feed" alt="Live camera stream" style="display:block;width:100%;height:100%;object-fit:cover;" />
+    <canvas id="camera-overlay" style="position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;"></canvas>
+  </div>
+`;
+document.body.appendChild(cameraPanel);
+
+const cameraFeedEl = document.getElementById('camera-feed') as HTMLImageElement | null;
+const cameraOverlayEl = document.getElementById('camera-overlay') as HTMLCanvasElement | null;
+const cameraStateEl = document.getElementById('camera-state') as HTMLSpanElement | null;
+const cameraFeedUrl = `${location.protocol}//${location.hostname}:8000/camera.mjpeg`;
+let latestPoseLandmarks2d: PoseLandmark2D[] | null = null;
+let cameraStreamActive = false;
+
+function resizeCameraOverlayCanvas() {
+  if (!cameraOverlayEl || !cameraFeedEl) return;
+  const dpr = Math.max(1, window.devicePixelRatio || 1);
+  const w = Math.max(1, Math.floor(cameraFeedEl.clientWidth));
+  const h = Math.max(1, Math.floor(cameraFeedEl.clientHeight));
+  if (cameraOverlayEl.width !== Math.floor(w * dpr) || cameraOverlayEl.height !== Math.floor(h * dpr)) {
+    cameraOverlayEl.width = Math.floor(w * dpr);
+    cameraOverlayEl.height = Math.floor(h * dpr);
+  }
+  cameraOverlayEl.style.width = `${w}px`;
+  cameraOverlayEl.style.height = `${h}px`;
+}
+
+function setCameraFeedEnabled(enabled: boolean) {
+  if (!cameraFeedEl || !cameraStateEl) return;
+
+  if (enabled && !cameraStreamActive) {
+    cameraStreamActive = true;
+    cameraStateEl.textContent = 'connecting...';
+    cameraFeedEl.src = `${cameraFeedUrl}?t=${Date.now()}`;
+  }
+
+  if (!enabled && cameraStreamActive) {
+    cameraStreamActive = false;
+    cameraFeedEl.src = '';
+    cameraStateEl.textContent = 'off';
+  }
+}
+
+function drawCameraPoseOverlay() {
+  if (!cameraOverlayEl) return;
+
+  const ctx = cameraOverlayEl.getContext('2d');
+  if (!ctx) return;
+
+  resizeCameraOverlayCanvas();
+  const w = cameraOverlayEl.width;
+  const h = cameraOverlayEl.height;
+  ctx.clearRect(0, 0, w, h);
+
+  if (!renderOptions.cameraFeed || !renderOptions.mlPoseOverlay || !latestPoseLandmarks2d) return;
+
+  const minVisibility = 0.2;
+  ctx.strokeStyle = 'rgba(60,220,160,0.85)';
+  ctx.lineWidth = Math.max(1, 2 * (window.devicePixelRatio || 1));
+  for (const [a, b] of POSE_CONNECTIONS) {
+    const p1 = latestPoseLandmarks2d[a];
+    const p2 = latestPoseLandmarks2d[b];
+    if (!p1 || !p2 || p1[2] < minVisibility || p2[2] < minVisibility) continue;
+    ctx.beginPath();
+    ctx.moveTo(p1[0] * w, p1[1] * h);
+    ctx.lineTo(p2[0] * w, p2[1] * h);
+    ctx.stroke();
+  }
+
+  ctx.fillStyle = 'rgba(255,120,80,0.9)';
+  const r = Math.max(1.5, 3.2 * (window.devicePixelRatio || 1));
+  for (const p of latestPoseLandmarks2d) {
+    if (p[2] < minVisibility) continue;
+    ctx.beginPath();
+    ctx.arc(p[0] * w, p[1] * h, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+if (cameraFeedEl) {
+  cameraFeedEl.addEventListener('load', () => {
+    if (cameraStateEl) cameraStateEl.textContent = 'live';
+    resizeCameraOverlayCanvas();
+  });
+  cameraFeedEl.addEventListener('error', () => {
+    if (cameraStateEl) cameraStateEl.textContent = 'error';
+  });
+}
 
 // initialize checkboxes from persisted options
 if (optShadows) optShadows.checked = !!renderOptions.shadows;
@@ -311,6 +446,8 @@ if (optDebugSkel) optDebugSkel.checked = !!renderOptions.debugSkeleton;
 if (optShowMesh) optShowMesh.checked = !!renderOptions.showSkinnedMesh;
 if (optWireframe) optWireframe.checked = !!renderOptions.wireframe;
 if (optServerSkel) optServerSkel.checked = !!renderOptions.serverSkeleton;
+if (optCameraFeed) optCameraFeed.checked = !!renderOptions.cameraFeed;
+if (optMlOverlay) optMlOverlay.checked = !!renderOptions.mlPoseOverlay;
 
 function updateRenderIndicator() {
   if (!renderIndicator) return;
@@ -319,6 +456,8 @@ function updateRenderIndicator() {
   if (renderOptions.shadows) flags.push('Shadows');
   if (renderOptions.wireframe) flags.push('Wireframe');
   if (renderOptions.serverSkeleton) flags.push('ServerSkel');
+  if (renderOptions.cameraFeed) flags.push('Cam');
+  if (renderOptions.mlPoseOverlay) flags.push('MLPose');
   renderIndicator.textContent = `${mode}${flags.length ? ' · ' + flags.join(', ') : ''}`;
 }
 
@@ -328,6 +467,8 @@ function hookOptionInputs() {
   if (optShowMesh) optShowMesh.addEventListener('change', () => { renderOptions.showSkinnedMesh = optShowMesh.checked; persistRenderOptions(); applyRenderOptions(); updateRenderIndicator(); });
   if (optWireframe) optWireframe.addEventListener('change', () => { renderOptions.wireframe = optWireframe.checked; persistRenderOptions(); applyRenderOptions(); updateRenderIndicator(); });
   if (optServerSkel) optServerSkel.addEventListener('change', () => { renderOptions.serverSkeleton = optServerSkel.checked; persistRenderOptions(); applyRenderOptions(); updateRenderIndicator(); });
+  if (optCameraFeed) optCameraFeed.addEventListener('change', () => { renderOptions.cameraFeed = optCameraFeed.checked; persistRenderOptions(); applyRenderOptions(); updateRenderIndicator(); });
+  if (optMlOverlay) optMlOverlay.addEventListener('change', () => { renderOptions.mlPoseOverlay = optMlOverlay.checked; persistRenderOptions(); applyRenderOptions(); updateRenderIndicator(); });
 }
 hookOptionInputs();
 updateRenderIndicator();
@@ -406,6 +547,18 @@ function persistRenderOptions() {
 
 
 function applyRenderOptions() {
+  setCameraFeedEnabled(!!renderOptions.cameraFeed);
+  if (cameraPanel) {
+    cameraPanel.style.display = renderOptions.cameraFeed ? 'block' : 'none';
+  }
+  if (cameraOverlayEl) {
+    cameraOverlayEl.style.display = (renderOptions.cameraFeed && renderOptions.mlPoseOverlay) ? 'block' : 'none';
+    if (!renderOptions.mlPoseOverlay) {
+      const ctx = cameraOverlayEl.getContext('2d');
+      if (ctx) ctx.clearRect(0, 0, cameraOverlayEl.width, cameraOverlayEl.height);
+    }
+  }
+
   renderer.shadowMap.enabled = !!renderOptions.shadows;
   try { key.castShadow = !!renderOptions.shadows; } catch (e) { }
   if (modelRoot) {
@@ -616,8 +769,17 @@ function animate(): void {
     if (latest && netEl) {
       const conf = latest.meta && (latest.meta as any).confidence;
       netEl.textContent = `Net: ${latest.skeleton ?? '—'} · frame ${latest.frame ?? '—'} · fps ${latest.fps ?? '—'} · conf ${typeof conf === 'number' ? conf.toFixed(2) : '—'}`;
+
+      const landmarks2d = latest.meta && (latest.meta as any).pose_landmarks_2d;
+      if (Array.isArray(landmarks2d)) {
+        latestPoseLandmarks2d = landmarks2d
+          .filter((p: any) => Array.isArray(p) && p.length >= 2)
+          .map((p: any) => [Number(p[0]), Number(p[1]), Number(p[2] ?? 1)] as PoseLandmark2D);
+      }
     }
   } catch (e) { /* ignore UI update errors */ }
+
+  drawCameraPoseOverlay();
 
   renderer.render(scene, camera);
 
@@ -727,4 +889,5 @@ window.addEventListener('resize', () => {
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
   renderer.setSize(w, h);
+  resizeCameraOverlayCanvas();
 });

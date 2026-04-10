@@ -4,8 +4,8 @@ import logging
 import uvicorn
 from typing import Optional, Set
 from contextlib import asynccontextmanager
-from fastapi.responses import HTMLResponse
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 
 try:
     from .processor import PoseProcessor, select_best_camera
@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 clients: Set[WebSocket] = set()
 pose: Optional[PoseProcessor] = None
 pose_init_error: Optional[str] = None
+camera_stream_clients = 0
 
 
 def init_pose_processor() -> Optional[PoseProcessor]:
@@ -93,11 +94,49 @@ async def ws_endpoint(ws: WebSocket):
     except WebSocketDisconnect:
         clients.discard(ws)
 
+
+@app.get("/camera.mjpeg")
+async def camera_stream(request: Request):
+    async def frame_generator():
+        global camera_stream_clients
+        camera_stream_clients += 1
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+
+                if pose is None:
+                    await asyncio.sleep(0.05)
+                    continue
+
+                frame = pose.get_latest_camera_jpeg()
+                if not frame:
+                    await asyncio.sleep(0.03)
+                    continue
+
+                yield (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n"
+                    b"Cache-Control: no-cache\r\n"
+                    b"Pragma: no-cache\r\n"
+                    + f"Content-Length: {len(frame)}\r\n\r\n".encode("ascii")
+                    + frame
+                    + b"\r\n"
+                )
+                await asyncio.sleep(0.03)
+        finally:
+            camera_stream_clients = max(0, camera_stream_clients - 1)
+
+    return StreamingResponse(
+        frame_generator(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+    )
+
 async def producer():
     global pose
     frame_idx = 0
     while True:
-        if not clients:
+        if not clients and camera_stream_clients == 0:
             await asyncio.sleep(0.01)
             continue
 

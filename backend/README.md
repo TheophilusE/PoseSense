@@ -27,6 +27,7 @@ uvicorn backend.server:app --reload --host 127.0.0.1 --port 8000
 
 - `GET /`: simple websocket test page
 - `GET /health`: backend health and camera readiness
+- `GET /camera.mjpeg`: live camera MJPEG stream
 - `WS /ws`: live pose stream (`poseFrame` payloads)
 
 ## Notes

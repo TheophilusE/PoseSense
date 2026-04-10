@@ -19,17 +19,21 @@ export class Retargeter {
   private constraints = new Map<string, JointConstraint>();
   private bindLocalByBoneName = new Map<string, Quaternion>();
   private axisLocalByJoint = new Map<string, Vector3>();
+  private axisLocalByBoneName = new Map<string, Vector3>();
   private prevLocalByBoneName = new Map<string, Quaternion>();
   private rootBone: Bone;
+  private rootDriver: Object3D | null = null;
   private rootScale: number;
   private _loggedMappings = false;
 
   private rootBindPos = new Vector3();
   private rootBindRot = new Quaternion();
+  private rootDriverBindPos = new Vector3();
+  private rootDriverBindRot = new Quaternion();
   private rootSourceOrigin = new Vector3();
   private rootOriginInitialized = false;
-  private rootMotionGainXZ = 1.8;
-  private rootMotionGainY = 1.15;
+  private rootMotionGainXZ = 1.0;
+  private rootMotionGainY = 0.55;
 
   // Temp objects reused each frame.
   private _qa = new Quaternion();
@@ -106,12 +110,39 @@ export class Retargeter {
       this.skeleton.bones[0]
     )!;
 
+    this.rootDriver = this.resolveRootDriver(this.rootBone) ?? this.mesh.parent;
+
     this.rootBindPos.copy(this.rootBone.position);
     this.rootBindRot.copy(this.rootBone.quaternion);
+    if (this.rootDriver) {
+      this.rootDriverBindPos.copy(this.rootDriver.position);
+      this.rootDriverBindRot.copy(this.rootDriver.quaternion);
+    }
 
     for (const b of this.skeleton.bones) {
       this.bindLocalByBoneName.set(b.name, b.quaternion.clone());
       this.prevLocalByBoneName.set(b.name, b.quaternion.clone());
+    }
+
+    // Cache each bone's rest axis in local space by looking at its child direction.
+    for (const bone of this.skeleton.bones) {
+      const childBone = bone.children.find((c) => (c as Bone).isBone) as Bone | undefined
+        ?? this.skeleton.bones.find(b => b.parent === bone);
+      if (!childBone) continue;
+
+      const a = new Vector3();
+      const b = new Vector3();
+      bone.getWorldPosition(a);
+      childBone.getWorldPosition(b);
+      const modelDir = b.sub(a).normalize();
+      if (modelDir.lengthSq() < 1e-10) continue;
+
+      const wq = new Quaternion();
+      bone.getWorldQuaternion(wq);
+      const axisLocal = modelDir.clone().applyQuaternion(wq.invert()).normalize();
+      if (axisLocal.lengthSq() > 1e-6) {
+        this.axisLocalByBoneName.set(bone.name, axisLocal);
+      }
     }
 
     // Optional per-bone corrective quats for axis alignment
@@ -168,26 +199,26 @@ export class Retargeter {
       const axisLocal = modelDir.clone().applyQuaternion(wq.invert()).normalize();
       if (axisLocal.lengthSq() > 1e-6) {
         this.axisLocalByJoint.set(name, axisLocal);
+        this.axisLocalByBoneName.set(bone.name, axisLocal);
       }
     }
 
     // Biomechanical constraints tuned for noisy webcam motion.
-    this.constraints.set('Spine', { maxSwingDeg: 35, twistMinDeg: -25, twistMaxDeg: 25, smoothing: 0.30, maxStepDeg: 16 });
+    this.constraints.set('Spine', { maxSwingDeg: 32, twistMinDeg: -22, twistMaxDeg: 22, smoothing: 0.42, maxStepDeg: 18 });
+    this.constraints.set('Spine1', { maxSwingDeg: 28, twistMinDeg: -18, twistMaxDeg: 18, smoothing: 0.46, maxStepDeg: 16 });
+    this.constraints.set('Spine2', { maxSwingDeg: 24, twistMinDeg: -15, twistMaxDeg: 15, smoothing: 0.50, maxStepDeg: 14 });
+    this.constraints.set('Neck', { maxSwingDeg: 22, twistMinDeg: -18, twistMaxDeg: 18, smoothing: 0.54, maxStepDeg: 13 });
+    this.constraints.set('Head', { maxSwingDeg: 18, twistMinDeg: -16, twistMaxDeg: 16, smoothing: 0.58, maxStepDeg: 12 });
     this.constraints.set('LeftUpLeg', { maxSwingDeg: 75, twistMinDeg: -35, twistMaxDeg: 35, smoothing: 0.35, maxStepDeg: 24 });
     this.constraints.set('RightUpLeg', { maxSwingDeg: 75, twistMinDeg: -35, twistMaxDeg: 35, smoothing: 0.35, maxStepDeg: 24 });
     this.constraints.set('LeftLeg', { maxSwingDeg: 110, twistMinDeg: -20, twistMaxDeg: 20, smoothing: 0.45, maxStepDeg: 26 });
     this.constraints.set('RightLeg', { maxSwingDeg: 110, twistMinDeg: -20, twistMaxDeg: 20, smoothing: 0.45, maxStepDeg: 26 });
-    this.constraints.set('LeftShoulder', { maxSwingDeg: 70, twistMinDeg: -18, twistMaxDeg: 18, smoothing: 0.38, maxStepDeg: 22 });
-    this.constraints.set('RightShoulder', { maxSwingDeg: 70, twistMinDeg: -18, twistMaxDeg: 18, smoothing: 0.38, maxStepDeg: 22 });
-    this.constraints.set('LeftArm', { maxSwingDeg: 120, twistMinDeg: -22, twistMaxDeg: 22, smoothing: 0.40, maxStepDeg: 24 });
-    this.constraints.set('RightArm', { maxSwingDeg: 120, twistMinDeg: -22, twistMaxDeg: 22, smoothing: 0.40, maxStepDeg: 24 });
-    this.constraints.set('LeftForeArm', { maxSwingDeg: 145, twistMinDeg: -35, twistMaxDeg: 35, smoothing: 0.46, maxStepDeg: 26 });
-    this.constraints.set('RightForeArm', { maxSwingDeg: 145, twistMinDeg: -35, twistMaxDeg: 35, smoothing: 0.46, maxStepDeg: 26 });
-
-    // Mixamo arms often look over-twisted with camera noise; use conservative roll corrections.
-    for (const j of ['LeftShoulder', 'RightShoulder', 'LeftArm', 'RightArm', 'LeftForeArm', 'RightForeArm']) {
-      this.corrections.set(j, new Quaternion());
-    }
+    this.constraints.set('LeftShoulder', { maxSwingDeg: 95, twistMinDeg: -30, twistMaxDeg: 30, smoothing: 0.50, maxStepDeg: 32 });
+    this.constraints.set('RightShoulder', { maxSwingDeg: 95, twistMinDeg: -30, twistMaxDeg: 30, smoothing: 0.50, maxStepDeg: 32 });
+    this.constraints.set('LeftArm', { maxSwingDeg: 145, twistMinDeg: -55, twistMaxDeg: 55, smoothing: 0.52, maxStepDeg: 36 });
+    this.constraints.set('RightArm', { maxSwingDeg: 145, twistMinDeg: -55, twistMaxDeg: 55, smoothing: 0.52, maxStepDeg: 36 });
+    this.constraints.set('LeftForeArm', { maxSwingDeg: 155, twistMinDeg: -70, twistMaxDeg: 70, smoothing: 0.56, maxStepDeg: 38 });
+    this.constraints.set('RightForeArm', { maxSwingDeg: 155, twistMinDeg: -70, twistMaxDeg: 70, smoothing: 0.56, maxStepDeg: 38 });
   }
 
   /**
@@ -212,6 +243,14 @@ export class Retargeter {
       if (normalize(name).endsWith(target)) return bone;
     }
     return undefined;
+  }
+
+  private resolveRootDriver(fromBone: Bone): Object3D | null {
+    let p: Object3D | null = fromBone.parent;
+    while (p && (p as any).isBone) {
+      p = p.parent;
+    }
+    return p;
   }
 
   private decomposeSwingTwist(q: Quaternion, twistAxisLocal: Vector3): { swing: Quaternion; twist: Quaternion } {
@@ -280,7 +319,9 @@ export class Retargeter {
   private applyConstrainedLocalRotation(bone: Bone, localTarget: Quaternion, jointName: string): void {
     const cfg = this.constraints.get(jointName) ?? this.defaultConstraint;
     const bindLocal = this.bindLocalByBoneName.get(bone.name) ?? bone.quaternion.clone();
-    const axisLocal = this.axisLocalByJoint.get(jointName) ?? new Vector3(1, 0, 0);
+    const axisLocal = this.axisLocalByBoneName.get(bone.name)
+      ?? this.axisLocalByJoint.get(jointName)
+      ?? new Vector3(1, 0, 0);
 
     const constrained = this.constrainLocalQuaternion(localTarget, bindLocal, axisLocal, cfg);
     const prev = this.prevLocalByBoneName.get(bone.name) ?? bindLocal.clone();
@@ -328,12 +369,14 @@ export class Retargeter {
     }
 
     const delta = this._vr.copy(p).sub(this.rootSourceOrigin);
+    const rootPosBase = this.rootDriver ? this.rootDriverBindPos : this.rootBindPos;
+    const rootRotBase = this.rootDriver ? this.rootDriverBindRot : this.rootBindRot;
     const rootTargetPos = new Vector3(
-      this.rootBindPos.x + delta.x * this.rootMotionGainXZ,
-      this.rootBindPos.y + delta.y * this.rootMotionGainY,
-      this.rootBindPos.z + delta.z * this.rootMotionGainXZ,
+      rootPosBase.x + delta.x * this.rootMotionGainXZ,
+      rootPosBase.y + delta.y * this.rootMotionGainY,
+      rootPosBase.z + delta.z * this.rootMotionGainXZ,
     );
-    const rootTargetRot = this.rootBindRot.clone().multiply(this.extractYawQuaternion(q));
+    const rootTargetRot = rootRotBase.clone().multiply(this.extractYawQuaternion(q));
 
     // Smooth root motion while preserving visible translation from the pose midpoint.
     if (!this._rootInitialized) {
@@ -345,8 +388,18 @@ export class Retargeter {
       this._rootRotFiltered.slerp(rootTargetRot, 0.24);
     }
 
-    this.rootBone.position.copy(this._rootPosFiltered);
-    this.rootBone.quaternion.copy(this._rootRotFiltered);
+    if (this.rootDriver) {
+      this.rootDriver.position.copy(this._rootPosFiltered);
+      this.rootDriver.quaternion.copy(this._rootRotFiltered);
+
+      // Keep hips in bind local pose and drive global motion on a non-bone
+      // parent object. This prevents a long root-to-hips connector artifact.
+      this.rootBone.position.copy(this.rootBindPos);
+      this.rootBone.quaternion.copy(this.rootBindRot);
+    } else {
+      this.rootBone.position.copy(this._rootPosFiltered);
+      this.rootBone.quaternion.copy(this._rootRotFiltered);
+    }
 
     // Build maps for joints
     const ja = new Map<string, [number, number, number, number]>(a.joints.map(j => [j.name, j.rotation]));
@@ -366,7 +419,7 @@ export class Retargeter {
 
       const bone = this.findBoneByName(tname);
       if (!bone) continue;
-  boneCount++;
+        boneCount++;
 
       const rotB = jb.get(srvName) ?? rotA;
 
@@ -402,7 +455,7 @@ export class Retargeter {
         // Distribute torso bending across the full spine chain.
         if (tname === 'Spine') {
           const spineNames = ['Spine', 'Spine1', 'Spine2', 'Neck', 'Head'];
-          const spineWeights = [1.0, 0.55, 0.30, 0.18, 0.10];
+          const spineWeights = [0.72, 0.46, 0.30, 0.18, 0.10];
 
           const baseBind = this.bindLocalByBoneName.get(bone.name) ?? bone.quaternion.clone();
           const spineDelta = baseBind.clone().invert().multiply(local).normalize();
@@ -416,7 +469,7 @@ export class Retargeter {
             const bind = this.bindLocalByBoneName.get(sb.name) ?? sb.quaternion.clone();
             const weightedDelta = this._identity.clone().slerp(spineDelta, clamp(sw, 0, 1));
             const spineLocalTarget = bind.clone().multiply(weightedDelta).normalize();
-            this.applyConstrainedLocalRotation(sb, spineLocalTarget, 'Spine');
+            this.applyConstrainedLocalRotation(sb, spineLocalTarget, sName);
           }
         } else {
           this.applyConstrainedLocalRotation(bone, local, tname);

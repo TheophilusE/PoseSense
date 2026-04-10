@@ -361,10 +361,17 @@ document.body.appendChild(cameraPanel);
 const cameraFeedEl = document.getElementById('camera-feed') as HTMLImageElement | null;
 const cameraOverlayEl = document.getElementById('camera-overlay') as HTMLCanvasElement | null;
 const cameraStateEl = document.getElementById('camera-state') as HTMLSpanElement | null;
+const cameraStageEl = cameraFeedEl?.parentElement as HTMLDivElement | null;
 const cameraFeedUrl = `${location.protocol}//${location.hostname}:8000/camera.mjpeg`;
 let latestPoseLandmarks2d: PoseLandmark2D[] | null = null;
 let cameraStreamActive = false;
 let cameraRetryTimer: number | null = null;
+
+if (cameraStageEl) {
+  // Mirror the camera panel to match expected selfie-style movement.
+  cameraStageEl.style.transform = 'scaleX(-1)';
+  cameraStageEl.style.transformOrigin = 'center';
+}
 
 function clearCameraRetry() {
   if (cameraRetryTimer !== null) {

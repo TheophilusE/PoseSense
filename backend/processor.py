@@ -153,6 +153,8 @@ class PoseProcessor:
         self._last_ts_ms = 0
         self._latest_camera_jpeg: Optional[bytes] = None
         self._latest_pose_landmarks_2d: Optional[List[List[float]]] = None
+        self._world_axis_initialized = False
+        self._world_axis_flip = np.array([1.0, 1.0, 1.0], dtype=np.float64)
 
         # Filters for stability
         self.filter_pos = OneEuro(freq=fps, min_cutoff=1.5, beta=0.03, dcutoff=1.0)
@@ -173,6 +175,33 @@ class PoseProcessor:
             "RightForeArm": np.array([  1, 0, 0]),
         }
 
+    def _normalize_world_axes(self, lmk: np.ndarray) -> np.ndarray:
+        """Normalize MediaPipe world landmarks to a stable upright frame.
+
+        MediaPipe world axes can vary by backend/camera conventions. We lock a
+        flip vector once from the first valid frame to keep temporal continuity:
+        - Ensure shoulders are above pelvis in +Y (upright convention).
+        - Ensure right hip is to the right of left hip in +X.
+        """
+        if lmk is None or lmk.shape[0] <= 24:
+            return lmk
+
+        if not self._world_axis_initialized:
+            try:
+                shoulder_y = float((lmk[11, 1] + lmk[12, 1]) * 0.5)
+                pelvis_y = float((lmk[23, 1] + lmk[24, 1]) * 0.5)
+                if shoulder_y < pelvis_y:
+                    self._world_axis_flip[1] = -1.0
+
+                # Keep lateral handedness stable (right side should have +X).
+                if float(lmk[24, 0]) < float(lmk[23, 0]):
+                    self._world_axis_flip[0] = -1.0
+            except Exception:
+                pass
+            self._world_axis_initialized = True
+
+        return lmk * self._world_axis_flip
+
     def _mp_landmarks_to_world(self, results):
         world_landmarks = getattr(results, "pose_world_landmarks", None)
         if not world_landmarks:
@@ -185,7 +214,8 @@ class PoseProcessor:
         pts = []
         for lm in first_pose:
             pts.append([lm.x, lm.y, lm.z])
-        return np.array(pts, dtype=np.float64)
+        lmk = np.array(pts, dtype=np.float64)
+        return self._normalize_world_axes(lmk)
 
     def _next_timestamp_ms(self) -> int:
         ts_ms = int(time.time() * 1000)

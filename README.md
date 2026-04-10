@@ -29,6 +29,8 @@ PoseSense/
 
 ## Backend Setup
 
+Backend pose inference uses MediaPipe Tasks Pose Landmarker.
+
 From the repository root:
 
 ```bash
@@ -37,6 +39,10 @@ source .venv/Scripts/activate
 pip install -r backend/requirements.txt
 uvicorn backend.server:app --reload --host 127.0.0.1 --port 8000
 ```
+
+On first run, the backend attempts to download the default model to
+`backend/models/pose_landmarker_full.task`.
+You can provide your own model path with `POSESENSE_POSE_MODEL_PATH`.
 
 Health check:
 

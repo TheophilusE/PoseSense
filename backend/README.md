@@ -1,6 +1,6 @@
 # Backend
 
-FastAPI pose streaming service using MediaPipe and OpenCV.
+FastAPI pose streaming service using MediaPipe Tasks and OpenCV.
 
 ## Install
 
@@ -11,6 +11,11 @@ python -m venv .venv
 source .venv/Scripts/activate
 pip install -r backend/requirements.txt
 ```
+
+The backend uses MediaPipe Tasks Pose Landmarker. On first startup it tries to
+download a default model to `backend/models/pose_landmarker_full.task`.
+If your environment has no internet access, set `POSESENSE_POSE_MODEL_PATH`
+to a local `.task` model file before starting the server.
 
 ## Run
 

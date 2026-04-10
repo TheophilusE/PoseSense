@@ -16,14 +16,29 @@ logger = logging.getLogger(__name__)
 
 clients: Set[WebSocket] = set()
 pose: Optional[PoseProcessor] = None
+pose_init_error: Optional[str] = None
 
 
 def init_pose_processor() -> Optional[PoseProcessor]:
+    global pose_init_error
     cap = select_best_camera()
     if cap is None:
+        pose_init_error = "No camera source available."
         logger.warning("No camera source available; backend will keep retrying.")
         return None
-    return PoseProcessor(source=cap, fps=30.0)
+
+    try:
+        processor = PoseProcessor(source=cap, fps=30.0)
+        pose_init_error = None
+        return processor
+    except Exception as exc:
+        pose_init_error = str(exc)
+        logger.exception("Failed to initialize pose processor: %s", exc)
+        try:
+            cap.release()
+        except Exception:
+            pass
+        return None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -64,6 +79,7 @@ def health():
         "status": "ok",
         "clients": len(clients),
         "pose_ready": pose is not None,
+        "pose_error": pose_init_error,
     }
 
 @app.websocket("/ws")
@@ -109,8 +125,17 @@ except Exception:
     def json_dumps(obj): return json.dumps(obj, separators=(",", ":"))
 
 if __name__ == "__main__":
+    import importlib.util
+
+    app_target = "server:app"
+    try:
+        if importlib.util.find_spec("backend.server") is not None:
+            app_target = "backend.server:app"
+    except ModuleNotFoundError:
+        app_target = "server:app"
+
     uvicorn.run(
-        "backend.server:app",
+        app_target,
         host=os.getenv("POSESENSE_HOST", "127.0.0.1"),
         port=int(os.getenv("POSESENSE_PORT", "8000")),
         reload=os.getenv("POSESENSE_RELOAD", "0") == "1",

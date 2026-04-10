@@ -1,7 +1,7 @@
 fastapi
 uvicorn[standard]
 opencv-python
-mediapipe
+mediapipe>=0.10.20
 numpy
 
 # Optional but recommended.

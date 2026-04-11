@@ -75,6 +75,16 @@ export class Retargeter {
   private root2dGainX = 2.2;
   private root2dGainY = 1.8;
   private root2dGainZ = 0.9;
+  private root2dOffsetFiltered = new Vector3();
+  private root2dOffsetSmoothing = 0.22;
+  private root2dOffsetDecay = 0.08;
+  private root2dDepthRatioMin = 0.74;
+  private root2dDepthRatioMax = 1.30;
+  private root2dMinShoulderScale = 0.42;
+  private root2dMinVisibility = 0.20;
+  private root2dMaxLateralOffset = 1.25;
+  private root2dMaxVerticalOffset = 1.05;
+  private root2dMaxDepthOffset = 0.46;
   private rootPosSmoothing = 0.28;
   private rootRotSmoothing = 0.24;
   private jointMotionGain = 1.0;
@@ -88,6 +98,12 @@ export class Retargeter {
   private footPlantVelEnter = 0.014;
   private footPlantVelExit = 0.045;
   private footLiftUnlockHeight = 0.10;
+  private footLiftUnlockRelative = 0.052;
+  private jumpUnlockHeight = 0.065;
+  private airborneTargetSmoothing = 0.34;
+  private enforceFlatFeet = true;
+  private flatFeetForwardBlend = 0.18;
+  private flatFeetSmoothing = 0.30;
   private pelvisShiftStrengthSingle = 0.22;
   private pelvisShiftStrengthDouble = 0.10;
   private pelvisShiftMaxStep = 0.05;
@@ -424,14 +440,23 @@ export class Retargeter {
     this.rootMotionGainY = 0.0;
     this.root2dGainX = 3.4;
     this.root2dGainY = 2.9;
-    this.root2dGainZ = 1.6;
+    this.root2dGainZ = 1.4;
+    this.root2dOffsetSmoothing = 0.20;
+    this.root2dOffsetDecay = 0.06;
+    this.root2dDepthRatioMax = 1.22;
+    this.root2dMaxDepthOffset = 0.36;
     this.rootPosSmoothing = 0.58;
     this.rootRotSmoothing = 0.50;
     this.jointMotionGain = 1.18;
     this.footPlantHeight = 0.058;
     this.footPlantVelEnter = 0.013;
     this.footPlantVelExit = 0.040;
-    this.footLiftUnlockHeight = 0.105;
+    this.footLiftUnlockHeight = 0.096;
+    this.footLiftUnlockRelative = 0.048;
+    this.jumpUnlockHeight = 0.052;
+    this.airborneTargetSmoothing = 0.28;
+    this.flatFeetForwardBlend = 0.12;
+    this.flatFeetSmoothing = 0.36;
     this.pelvisShiftStrengthSingle = 0.24;
     this.pelvisShiftStrengthDouble = 0.12;
     this.pelvisShiftMaxStep = 0.055;
@@ -478,10 +503,16 @@ export class Retargeter {
     }
 
     const speed = targetWorld.distanceTo(state.prevTarget);
+    const verticalSpeed = Math.abs(targetWorld.y - state.prevTarget.y);
     const lift = targetWorld.y - this.groundY;
+    const liftFromLock = targetWorld.y - state.lockPos.y;
 
     if (state.locked) {
-      const shouldUnlock = (lift > this.footLiftUnlockHeight) || (speed > this.footPlantVelExit);
+      const shouldUnlock =
+        (lift > this.footLiftUnlockHeight)
+        || (liftFromLock > this.footLiftUnlockRelative)
+        || (verticalSpeed > (this.footPlantVelExit * 0.6))
+        || (speed > this.footPlantVelExit);
       if (shouldUnlock) {
         state.locked = false;
         state.lockPos.copy(targetWorld);
@@ -490,7 +521,10 @@ export class Retargeter {
         state.lockPos.lerp(targetWorld, 0.03);
       }
     } else if (this.keepGrounded) {
-      const shouldLock = (lift < this.footPlantHeight) && (speed < this.footPlantVelEnter);
+      const shouldLock =
+        (lift < this.footPlantHeight)
+        && (speed < this.footPlantVelEnter)
+        && (verticalSpeed < this.footPlantVelEnter);
       if (shouldLock) {
         state.locked = true;
         state.lockPos.copy(targetWorld);
@@ -775,6 +809,76 @@ export class Retargeter {
     }
   }
 
+  private applyFlatFootPose(footBone: Bone, toeBone: Bone | null, jointName: 'LeftFoot' | 'RightFoot'): void {
+    const parent = footBone.parent as Object3D | null;
+    if (!parent) return;
+
+    const axisLocal = (this.axisLocalByBoneName.get(footBone.name) ?? this._tmpForward.set(0, 0, 1)).clone().normalize();
+    if (axisLocal.lengthSq() < 1e-8) return;
+
+    footBone.getWorldPosition(this._ikV1);
+    footBone.getWorldQuaternion(this._ikQ1);
+
+    const desiredForward = this._ikV2.set(0, 0, 1).applyQuaternion(this._rootRotFiltered);
+    desiredForward.y = 0;
+    if (desiredForward.lengthSq() < 1e-8) {
+      desiredForward.set(0, 0, 1);
+    } else {
+      desiredForward.normalize();
+    }
+
+    if (toeBone) {
+      toeBone.getWorldPosition(this._ikV3);
+      const observedForward = this._ikV4.copy(this._ikV3).sub(this._ikV1);
+      observedForward.y = 0;
+      if (observedForward.lengthSq() > 1e-8) {
+        observedForward.normalize();
+        desiredForward.lerp(observedForward, this.flatFeetForwardBlend).normalize();
+      }
+    }
+
+    const currentForward = this._ikV5.copy(axisLocal).applyQuaternion(this._ikQ1).normalize();
+    const currentFlat = this._ikV6.copy(currentForward);
+    currentFlat.y = 0;
+    if (currentFlat.lengthSq() < 1e-8) {
+      currentFlat.copy(desiredForward);
+    } else {
+      currentFlat.normalize();
+    }
+
+    this._ikQ2.setFromUnitVectors(currentFlat, desiredForward);
+    const desiredWorld = this._ikQ3.copy(this._ikQ2).multiply(this._ikQ1).normalize();
+
+    const forwardAfterYaw = this._ikV7.copy(axisLocal).applyQuaternion(desiredWorld).normalize();
+    const forwardFlat = this._ikV8.copy(forwardAfterYaw);
+    forwardFlat.y = 0;
+    if (forwardFlat.lengthSq() > 1e-8) {
+      forwardFlat.normalize();
+      this._ikQ4.setFromUnitVectors(forwardAfterYaw, forwardFlat);
+      desiredWorld.premultiply(this._ikQ4).normalize();
+    }
+
+    parent.getWorldQuaternion(this._ikQ5);
+    this._ikQ5.invert();
+    const desiredLocal = this._ikQ2.copy(this._ikQ5).multiply(desiredWorld).normalize();
+
+    const prevLocal = this.prevLocalByBoneName.get(footBone.name) ?? footBone.quaternion.clone();
+    const blendedLocal = this._ikQ3.copy(prevLocal).slerp(desiredLocal, this.flatFeetSmoothing).normalize();
+    this.applyConstrainedLocalRotation(footBone, blendedLocal, jointName);
+  }
+
+  private applyFlatFootOrientation(): void {
+    if (!this.enforceFlatFeet) return;
+
+    this.mesh.updateMatrixWorld(true);
+    if (this.leftFootBone) {
+      this.applyFlatFootPose(this.leftFootBone, this.leftToeBone, 'LeftFoot');
+    }
+    if (this.rightFootBone) {
+      this.applyFlatFootPose(this.rightFootBone, this.rightToeBone, 'RightFoot');
+    }
+  }
+
   private applyProceduralLegIk(a: PoseFrame, b: PoseFrame, alpha: number): void {
     if (!this.enableLegIK) return;
     if (!this.leftUpLegBone || !this.leftLegBone || !this.leftFootBone) return;
@@ -790,6 +894,17 @@ export class Retargeter {
     }
     if (hasRightTarget) {
       this.updateFootLockState(this.rightFootLock, this._ikV5);
+    }
+
+    if (hasLeftTarget && hasRightTarget) {
+      const leftLift = this._ikV4.y - this.groundY;
+      const rightLift = this._ikV5.y - this.groundY;
+      if (leftLift > this.jumpUnlockHeight && rightLift > this.jumpUnlockHeight) {
+        this.leftFootLock.locked = false;
+        this.rightFootLock.locked = false;
+        this.leftFootLock.lockPos.copy(this._ikV4);
+        this.rightFootLock.lockPos.copy(this._ikV5);
+      }
     }
 
     this.applySupportPelvisShift();
@@ -816,7 +931,11 @@ export class Retargeter {
         this.leftLegTargetFiltered.copy(leftDesired);
         this.leftLegTargetInitialized = true;
       } else {
-        this.leftLegTargetFiltered.lerp(leftDesired, this.legTargetSmoothing);
+        const leftLift = leftDesired.y - this.groundY;
+        const leftBlend = leftLift > (this.footPlantHeight + 0.02)
+          ? this.airborneTargetSmoothing
+          : this.legTargetSmoothing;
+        this.leftLegTargetFiltered.lerp(leftDesired, leftBlend);
       }
       const leftPole = this._kneePoleL.copy(this._kneeHintL);
       this.solveTwoBoneIk(
@@ -854,7 +973,11 @@ export class Retargeter {
         this.rightLegTargetFiltered.copy(rightDesired);
         this.rightLegTargetInitialized = true;
       } else {
-        this.rightLegTargetFiltered.lerp(rightDesired, this.legTargetSmoothing);
+        const rightLift = rightDesired.y - this.groundY;
+        const rightBlend = rightLift > (this.footPlantHeight + 0.02)
+          ? this.airborneTargetSmoothing
+          : this.legTargetSmoothing;
+        this.rightLegTargetFiltered.lerp(rightDesired, rightBlend);
       }
       const rightPole = this._kneePoleR.copy(this._kneeHintR);
       this.solveTwoBoneIk(
@@ -870,6 +993,8 @@ export class Retargeter {
         'RightLeg',
       );
     }
+
+    this.applyFlatFootOrientation();
   }
 
   /**
@@ -1012,9 +1137,15 @@ export class Retargeter {
   private extractRootPosition(frame: PoseFrame, out: Vector3): Vector3 {
     out.copy(vec3FromArray(frame.root.position)).multiplyScalar(this.rootScale);
 
+    const decay2dOffset = () => {
+      this.root2dOffsetFiltered.lerp(this._ikV9.set(0, 0, 0), this.root2dOffsetDecay);
+      out.add(this.root2dOffsetFiltered);
+      return out;
+    };
+
     const pose2d = frame.meta && (frame.meta as any).pose_landmarks_2d;
     if (!Array.isArray(pose2d) || pose2d.length < 25) {
-      return out;
+      return decay2dOffset();
     }
 
     const ls = pose2d[11];
@@ -1022,7 +1153,15 @@ export class Retargeter {
     const lh = pose2d[23];
     const rh = pose2d[24];
     if (![ls, rs, lh, rh].every((p) => Array.isArray(p) && p.length >= 2)) {
-      return out;
+      return decay2dOffset();
+    }
+
+    const vis = [ls, rs, lh, rh]
+      .map((p) => Number((p as any)[2] ?? 1.0))
+      .filter((v) => Number.isFinite(v));
+    const minVis = vis.length ? Math.min(...vis) : 1.0;
+    if (minVis < this.root2dMinVisibility) {
+      return decay2dOffset();
     }
 
     const hipX = (Number(lh[0]) + Number(rh[0])) * 0.5;
@@ -1030,21 +1169,38 @@ export class Retargeter {
     const shoulderW = Math.hypot(Number(ls[0]) - Number(rs[0]), Number(ls[1]) - Number(rs[1]));
 
     if (!Number.isFinite(hipX) || !Number.isFinite(hipY) || !Number.isFinite(shoulderW) || shoulderW < 1e-4) {
-      return out;
+      return decay2dOffset();
     }
 
     if (!this.root2dInitialized) {
       this.root2dOrigin.set(hipX, hipY, 0);
       this.root2dRefShoulderWidth = shoulderW;
       this.root2dInitialized = true;
+      this.root2dOffsetFiltered.set(0, 0, 0);
     }
 
-    const dx = (hipX - this.root2dOrigin.x) * this.root2dGainX;
-    const dy = (this.root2dOrigin.y - hipY) * this.root2dGainY;
-    const depthRatio = this.root2dRefShoulderWidth / Math.max(shoulderW, 1e-4);
-    const dz = (depthRatio - 1.0) * this.root2dGainZ;
+    const stableShoulderW = Math.max(
+      shoulderW,
+      this.root2dRefShoulderWidth * this.root2dMinShoulderScale,
+      1e-4,
+    );
+    const depthRatio = clamp(
+      this.root2dRefShoulderWidth / stableShoulderW,
+      this.root2dDepthRatioMin,
+      this.root2dDepthRatioMax,
+    );
 
-    out.add(this._vu.set(dx, dy, dz));
+    const rawDx = (hipX - this.root2dOrigin.x) * this.root2dGainX;
+    const rawDy = (this.root2dOrigin.y - hipY) * this.root2dGainY;
+    const rawDz = (depthRatio - 1.0) * this.root2dGainZ;
+    const targetOffset = this._vu.set(
+      clamp(rawDx, -this.root2dMaxLateralOffset, this.root2dMaxLateralOffset),
+      clamp(rawDy, -this.root2dMaxVerticalOffset, this.root2dMaxVerticalOffset),
+      clamp(rawDz, -this.root2dMaxDepthOffset, this.root2dMaxDepthOffset),
+    );
+
+    this.root2dOffsetFiltered.lerp(targetOffset, this.root2dOffsetSmoothing);
+    out.add(this.root2dOffsetFiltered);
     return out;
   }
 

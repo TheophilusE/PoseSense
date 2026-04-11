@@ -35,6 +35,8 @@ _MODEL_DOWNLOAD_ERROR: Optional[str] = None
 STREAM_WIDTH = int(os.getenv("POSESENSE_STREAM_WIDTH", "640"))
 STREAM_JPEG_QUALITY = int(os.getenv("POSESENSE_STREAM_JPEG_QUALITY", "70"))
 MAX_WORLD_LANDMARK_JUMP = float(os.getenv("POSESENSE_MAX_WORLD_LANDMARK_JUMP", "0.28"))
+MIN_WORLD_LR_SIGN_DX = float(os.getenv("POSESENSE_MIN_WORLD_LR_SIGN_DX", "0.03"))
+WORLD_LR_SIGN_HYSTERESIS = float(os.getenv("POSESENSE_WORLD_LR_SIGN_HYSTERESIS", "0.01"))
 
 
 def _resolve_pose_model_path() -> str:
@@ -219,10 +221,17 @@ class PoseProcessor:
             self._world_axis_flip[1] = 1.0 if shoulder_y >= pelvis_y else -1.0
 
             # Keep lateral handedness stable (right side should have +X) while
-            # avoiding sign churn when hips are nearly overlapping in projection.
+            # avoiding sign churn when body turns close to side profile.
             hip_dx = float(lmk[24, 0] - lmk[23, 0])
-            if abs(hip_dx) > 1e-4:
-                self._world_axis_flip[0] = 1.0 if hip_dx >= 0 else -1.0
+            shoulder_dx = float(lmk[12, 0] - lmk[11, 0])
+            lateral_signal = (hip_dx * 0.7) + (shoulder_dx * 0.3)
+            signal_sign = 1.0 if lateral_signal >= 0.0 else -1.0
+            prev_sign = self._world_axis_flip[0]
+            switch_margin = max(MIN_WORLD_LR_SIGN_DX + WORLD_LR_SIGN_HYSTERESIS, 1e-4)
+            hold_margin = max(MIN_WORLD_LR_SIGN_DX * 0.5, 1e-4)
+            margin = hold_margin if signal_sign == prev_sign else switch_margin
+            if abs(lateral_signal) >= margin:
+                self._world_axis_flip[0] = signal_sign
         except Exception:
             pass
 

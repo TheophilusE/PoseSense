@@ -70,16 +70,23 @@ export class Retargeter {
   private mapName: (n: string) => string | null = (n: string) => {
     switch (n) {
       case 'Spine': return 'Spine';
+      case 'Chest': return 'Spine2';
+      case 'Neck': return 'Neck';
+      case 'Head': return 'Head';
       case 'LeftUpLeg': return 'LeftUpLeg';
       case 'LeftLeg': return 'LeftLeg';
+      case 'LeftFoot': return 'LeftFoot';
       case 'RightUpLeg': return 'RightUpLeg';
       case 'RightLeg': return 'RightLeg';
+      case 'RightFoot': return 'RightFoot';
       case 'LeftShoulder': return 'LeftShoulder';
       case 'LeftArm': return 'LeftArm';
       case 'LeftForeArm': return 'LeftForeArm';
+      case 'LeftHand': return 'LeftHand';
       case 'RightShoulder': return 'RightShoulder';
       case 'RightArm': return 'RightArm';
       case 'RightForeArm': return 'RightForeArm';
+      case 'RightHand': return 'RightHand';
       default: return null;
     }
   };
@@ -171,16 +178,23 @@ export class Retargeter {
     // rotations and the Mixamo bone axes.
     const serverRestDirs: Record<string, [number, number, number]> = {
       Spine: [0, 1, 0],
+      Spine2: [0, 1, 0],
+      Neck: [0, 1, 0],
+      Head: [0, 1, 0],
       LeftUpLeg: [0, -1, 0],
       LeftLeg: [0, -1, 0],
+      LeftFoot: [0, 0, 1],
       RightUpLeg: [0, -1, 0],
       RightLeg: [0, -1, 0],
+      RightFoot: [0, 0, 1],
       LeftShoulder: [-1, 0, 0],
       RightShoulder: [1, 0, 0],
       LeftArm: [-1, 0, 0],
       LeftForeArm: [-1, 0, 0],
+      LeftHand: [-1, 0, 0],
       RightArm: [1, 0, 0],
       RightForeArm: [1, 0, 0],
+      RightHand: [1, 0, 0],
     };
 
     for (const [name, dirArr] of Object.entries(serverRestDirs)) {
@@ -229,12 +243,16 @@ export class Retargeter {
     this.constraints.set('RightUpLeg', { maxSwingDeg: 75, twistMinDeg: -35, twistMaxDeg: 35, smoothing: 0.35, maxStepDeg: 24 });
     this.constraints.set('LeftLeg', { maxSwingDeg: 110, twistMinDeg: -20, twistMaxDeg: 20, smoothing: 0.45, maxStepDeg: 26 });
     this.constraints.set('RightLeg', { maxSwingDeg: 110, twistMinDeg: -20, twistMaxDeg: 20, smoothing: 0.45, maxStepDeg: 26 });
+    this.constraints.set('LeftFoot', { maxSwingDeg: 65, twistMinDeg: -20, twistMaxDeg: 20, smoothing: 0.50, maxStepDeg: 22 });
+    this.constraints.set('RightFoot', { maxSwingDeg: 65, twistMinDeg: -20, twistMaxDeg: 20, smoothing: 0.50, maxStepDeg: 22 });
     this.constraints.set('LeftShoulder', { maxSwingDeg: 95, twistMinDeg: -18, twistMaxDeg: 18, smoothing: 0.52, maxStepDeg: 30 });
     this.constraints.set('RightShoulder', { maxSwingDeg: 95, twistMinDeg: -18, twistMaxDeg: 18, smoothing: 0.52, maxStepDeg: 30 });
     this.constraints.set('LeftArm', { maxSwingDeg: 145, twistMinDeg: -28, twistMaxDeg: 28, smoothing: 0.54, maxStepDeg: 34 });
     this.constraints.set('RightArm', { maxSwingDeg: 145, twistMinDeg: -28, twistMaxDeg: 28, smoothing: 0.54, maxStepDeg: 34 });
     this.constraints.set('LeftForeArm', { maxSwingDeg: 155, twistMinDeg: -36, twistMaxDeg: 36, smoothing: 0.58, maxStepDeg: 36 });
     this.constraints.set('RightForeArm', { maxSwingDeg: 155, twistMinDeg: -36, twistMaxDeg: 36, smoothing: 0.58, maxStepDeg: 36 });
+    this.constraints.set('LeftHand', { maxSwingDeg: 70, twistMinDeg: -30, twistMaxDeg: 30, smoothing: 0.60, maxStepDeg: 28 });
+    this.constraints.set('RightHand', { maxSwingDeg: 70, twistMinDeg: -30, twistMaxDeg: 30, smoothing: 0.60, maxStepDeg: 28 });
   }
 
   /**

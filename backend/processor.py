@@ -34,6 +34,7 @@ _MODEL_DOWNLOAD_ERROR: Optional[str] = None
 
 STREAM_WIDTH = int(os.getenv("POSESENSE_STREAM_WIDTH", "640"))
 STREAM_JPEG_QUALITY = int(os.getenv("POSESENSE_STREAM_JPEG_QUALITY", "70"))
+MAX_WORLD_LANDMARK_JUMP = float(os.getenv("POSESENSE_MAX_WORLD_LANDMARK_JUMP", "0.28"))
 
 
 def _resolve_pose_model_path() -> str:
@@ -155,6 +156,7 @@ class PoseProcessor:
         self._latest_pose_landmarks_2d: Optional[List[List[float]]] = None
         self._world_axis_initialized = False
         self._world_axis_flip = np.array([1.0, 1.0, 1.0], dtype=np.float64)
+        self._prev_world_landmarks: Optional[np.ndarray] = None
 
         # Filters for stability
         self.filter_pos = OneEuro(freq=fps, min_cutoff=1.5, beta=0.03, dcutoff=1.0)
@@ -174,6 +176,34 @@ class PoseProcessor:
             "RightArm":     np.array([  1, 0, 0]),
             "RightForeArm": np.array([  1, 0, 0]),
         }
+
+    def _reject_world_landmark_outliers(self, lmk: np.ndarray) -> np.ndarray:
+        if lmk is None:
+            return lmk
+
+        if self._prev_world_landmarks is None or self._prev_world_landmarks.shape != lmk.shape:
+            self._prev_world_landmarks = lmk.copy()
+            return lmk
+
+        if MAX_WORLD_LANDMARK_JUMP <= 0:
+            self._prev_world_landmarks = lmk.copy()
+            return lmk
+
+        prev = self._prev_world_landmarks
+        delta = lmk - prev
+        dist = np.linalg.norm(delta, axis=1)
+        mask = dist > MAX_WORLD_LANDMARK_JUMP
+
+        if np.any(mask):
+            lmk_clamped = lmk.copy()
+            d = np.maximum(dist[mask], 1e-6)
+            scale = (MAX_WORLD_LANDMARK_JUMP / d)[:, None]
+            lmk_clamped[mask] = prev[mask] + delta[mask] * scale
+            self._prev_world_landmarks = lmk_clamped.copy()
+            return lmk_clamped
+
+        self._prev_world_landmarks = lmk.copy()
+        return lmk
 
     def _normalize_world_axes(self, lmk: np.ndarray) -> np.ndarray:
         """Normalize MediaPipe world landmarks to a stable upright frame.
@@ -276,6 +306,8 @@ class PoseProcessor:
         res = self.pose.detect_for_video(mp_image, self._next_timestamp_ms())
         self._cache_camera_stream_data(frame, res)
         lmk_world = self._mp_landmarks_to_world(res)
+        if lmk_world is not None:
+            lmk_world = self._reject_world_landmark_outliers(lmk_world)
         return lmk_world, frame
 
     def process(self, frame_idx):

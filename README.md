@@ -111,3 +111,12 @@ npm run preview
 4. Use the Render panel toggles for `Camera Feed` and `ML Pose Overlay`.
 
 The frontend connects to `ws://<hostname>:8000/ws` for live pose frames.
+
+## Retargeting Pipeline
+
+Runtime retargeting now follows a bridge-rig flow:
+
+1. MediaPipe world landmarks are converted into an intermediate humanoid target set.
+2. Backend solves two-bone IK for arms and legs to keep chain lengths stable.
+3. Canonical joint rotations are streamed over websocket.
+4. Frontend retargets canonical joints onto the Mixamo skeleton (including feet/hands/head where available).

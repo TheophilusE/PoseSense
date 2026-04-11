@@ -90,6 +90,7 @@ export class ServerSkeletonHelper {
     private _vD = new THREE.Vector3();
     private _vE = new THREE.Vector3();
     private _vF = new THREE.Vector3();
+    private _vG = new THREE.Vector3();
     private _qA = new THREE.Quaternion();
     private _qB = new THREE.Quaternion();
 
@@ -115,7 +116,7 @@ export class ServerSkeletonHelper {
     }
 
     // Draw an actual connected canonical skeleton from server pose data.
-    updateFromPose(frame: any, _bonesByName?: Map<string, THREE.Object3D>) {
+    updateFromPose(frame: any, bonesByName?: Map<string, THREE.Object3D>) {
         const attr = this.mesh.geometry.getAttribute('position') as THREE.BufferAttribute;
         const arr = attr.array as Float32Array;
 
@@ -214,13 +215,28 @@ export class ServerSkeletonHelper {
             ['RightWrist', rightWrist],
         ]);
 
+        // Vertically align server overlay to the loaded mesh hips so the
+        // helper sits on the character instead of around world-origin height.
+        let yOffset = 0;
+        if (bonesByName) {
+            const hips = bonesByName.get('Hips')
+                ?? bonesByName.get('mixamorig:Hips')
+                ?? bonesByName.get('mixamorigHips')
+                ?? bonesByName.get('mixamorighips');
+            if (hips) {
+                hips.getWorldPosition(this._vG);
+                const pelvisPoint = points.get('Pelvis') ?? rootPos;
+                yOffset = this._vG.y - pelvisPoint.y;
+            }
+        }
+
         let i = 0;
         for (const [aName, bName] of this._segments) {
             const pa = points.get(aName) ?? rootPos;
             const pb = points.get(bName) ?? rootPos;
 
-            arr[i++] = pa.x; arr[i++] = pa.y; arr[i++] = pa.z;
-            arr[i++] = pb.x; arr[i++] = pb.y; arr[i++] = pb.z;
+            arr[i++] = pa.x; arr[i++] = pa.y + yOffset; arr[i++] = pa.z;
+            arr[i++] = pb.x; arr[i++] = pb.y + yOffset; arr[i++] = pb.z;
         }
 
         attr.needsUpdate = true;

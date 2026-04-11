@@ -34,12 +34,21 @@ export class Retargeter {
   private rootOriginInitialized = false;
   private rootMotionGainXZ = 1.0;
   private rootMotionGainY = 0.55;
+  private root2dOrigin = new Vector3();
+  private root2dInitialized = false;
+  private root2dRefShoulderWidth = 0;
+  private root2dGainX = 2.2;
+  private root2dGainY = 1.8;
+  private root2dGainZ = 0.9;
 
   // Temp objects reused each frame.
   private _qa = new Quaternion();
   private _qb = new Quaternion();
   private _qr = new Quaternion();
   private _vr = new Vector3();
+  private _vs = new Vector3();
+  private _vt = new Vector3();
+  private _vu = new Vector3();
   private _identity = new Quaternion();
   private _tmpForward = new Vector3();
   private _upAxis = new Vector3(0, 1, 0);
@@ -213,12 +222,12 @@ export class Retargeter {
     this.constraints.set('RightUpLeg', { maxSwingDeg: 75, twistMinDeg: -35, twistMaxDeg: 35, smoothing: 0.35, maxStepDeg: 24 });
     this.constraints.set('LeftLeg', { maxSwingDeg: 110, twistMinDeg: -20, twistMaxDeg: 20, smoothing: 0.45, maxStepDeg: 26 });
     this.constraints.set('RightLeg', { maxSwingDeg: 110, twistMinDeg: -20, twistMaxDeg: 20, smoothing: 0.45, maxStepDeg: 26 });
-    this.constraints.set('LeftShoulder', { maxSwingDeg: 95, twistMinDeg: -30, twistMaxDeg: 30, smoothing: 0.50, maxStepDeg: 32 });
-    this.constraints.set('RightShoulder', { maxSwingDeg: 95, twistMinDeg: -30, twistMaxDeg: 30, smoothing: 0.50, maxStepDeg: 32 });
-    this.constraints.set('LeftArm', { maxSwingDeg: 145, twistMinDeg: -55, twistMaxDeg: 55, smoothing: 0.52, maxStepDeg: 36 });
-    this.constraints.set('RightArm', { maxSwingDeg: 145, twistMinDeg: -55, twistMaxDeg: 55, smoothing: 0.52, maxStepDeg: 36 });
-    this.constraints.set('LeftForeArm', { maxSwingDeg: 155, twistMinDeg: -70, twistMaxDeg: 70, smoothing: 0.56, maxStepDeg: 38 });
-    this.constraints.set('RightForeArm', { maxSwingDeg: 155, twistMinDeg: -70, twistMaxDeg: 70, smoothing: 0.56, maxStepDeg: 38 });
+    this.constraints.set('LeftShoulder', { maxSwingDeg: 95, twistMinDeg: -18, twistMaxDeg: 18, smoothing: 0.52, maxStepDeg: 30 });
+    this.constraints.set('RightShoulder', { maxSwingDeg: 95, twistMinDeg: -18, twistMaxDeg: 18, smoothing: 0.52, maxStepDeg: 30 });
+    this.constraints.set('LeftArm', { maxSwingDeg: 145, twistMinDeg: -28, twistMaxDeg: 28, smoothing: 0.54, maxStepDeg: 34 });
+    this.constraints.set('RightArm', { maxSwingDeg: 145, twistMinDeg: -28, twistMaxDeg: 28, smoothing: 0.54, maxStepDeg: 34 });
+    this.constraints.set('LeftForeArm', { maxSwingDeg: 155, twistMinDeg: -36, twistMaxDeg: 36, smoothing: 0.58, maxStepDeg: 36 });
+    this.constraints.set('RightForeArm', { maxSwingDeg: 155, twistMinDeg: -36, twistMaxDeg: 36, smoothing: 0.58, maxStepDeg: 36 });
   }
 
   /**
@@ -350,13 +359,52 @@ export class Retargeter {
     return new Quaternion().setFromAxisAngle(this._upAxis, yaw);
   }
 
+  private extractRootPosition(frame: PoseFrame, out: Vector3): Vector3 {
+    out.copy(vec3FromArray(frame.root.position)).multiplyScalar(this.rootScale);
+
+    const pose2d = frame.meta && (frame.meta as any).pose_landmarks_2d;
+    if (!Array.isArray(pose2d) || pose2d.length < 25) {
+      return out;
+    }
+
+    const ls = pose2d[11];
+    const rs = pose2d[12];
+    const lh = pose2d[23];
+    const rh = pose2d[24];
+    if (![ls, rs, lh, rh].every((p) => Array.isArray(p) && p.length >= 2)) {
+      return out;
+    }
+
+    const hipX = (Number(lh[0]) + Number(rh[0])) * 0.5;
+    const hipY = (Number(lh[1]) + Number(rh[1])) * 0.5;
+    const shoulderW = Math.hypot(Number(ls[0]) - Number(rs[0]), Number(ls[1]) - Number(rs[1]));
+
+    if (!Number.isFinite(hipX) || !Number.isFinite(hipY) || !Number.isFinite(shoulderW) || shoulderW < 1e-4) {
+      return out;
+    }
+
+    if (!this.root2dInitialized) {
+      this.root2dOrigin.set(hipX, hipY, 0);
+      this.root2dRefShoulderWidth = shoulderW;
+      this.root2dInitialized = true;
+    }
+
+    const dx = (hipX - this.root2dOrigin.x) * this.root2dGainX;
+    const dy = (this.root2dOrigin.y - hipY) * this.root2dGainY;
+    const depthRatio = this.root2dRefShoulderWidth / Math.max(shoulderW, 1e-4);
+    const dz = (depthRatio - 1.0) * this.root2dGainZ;
+
+    out.add(this._vu.set(dx, dy, dz));
+    return out;
+  }
+
   applyInterpolated(a: PoseFrame, b: PoseFrame, alphaIn: number): void {
     const tStart = (typeof performance !== 'undefined') ? performance.now() : Date.now();
     const alpha = clamp(alphaIn, 0, 1);
 
     // Root pose
-    const pa = vec3FromArray(a.root.position).multiplyScalar(this.rootScale);
-    const pb = vec3FromArray(b.root.position).multiplyScalar(this.rootScale);
+    const pa = this.extractRootPosition(a, this._vs);
+    const pb = this.extractRootPosition(b, this._vt);
     const qa = quatFromArray(a.root.rotation);
     const qb = quatFromArray(b.root.rotation);
 

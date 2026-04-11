@@ -71,12 +71,15 @@ export class Retargeter {
       case 'LeftLeg': return 'LeftLeg';
       case 'RightUpLeg': return 'RightUpLeg';
       case 'RightLeg': return 'RightLeg';
-      case 'LeftShoulder': return 'LeftShoulder';
-      case 'LeftArm': return 'LeftArm';
-      case 'LeftForeArm': return 'LeftForeArm';
-      case 'RightShoulder': return 'RightShoulder';
-      case 'RightArm': return 'RightArm';
-      case 'RightForeArm': return 'RightForeArm';
+      // Webcam-facing canonical output can be mirrored relative to Mixamo rig
+      // handedness. Swap upper-limb side mapping to keep mesh arms aligned
+      // with the visually-correct server skeleton overlay.
+      case 'LeftShoulder': return 'RightShoulder';
+      case 'LeftArm': return 'RightArm';
+      case 'LeftForeArm': return 'RightForeArm';
+      case 'RightShoulder': return 'LeftShoulder';
+      case 'RightArm': return 'LeftArm';
+      case 'RightForeArm': return 'LeftForeArm';
       default: return null;
     }
   };

@@ -31,6 +31,17 @@ In the in-app Render panel you can toggle:
 - `Camera Feed` to show/hide the live camera panel.
 - `ML Pose Overlay` to show/hide the model-estimated 2D pose over the camera feed.
 
+## Avatar Selection
+
+The frontend now defaults to a procedural humanoid rig (no FBX dependency).
+
+- Procedural avatar (default): open the app normally.
+- Mixamo Y-Bot (optional): add `?avatar=mixamo` to the frontend URL.
+
+Example:
+
+`http://localhost:5173/?avatar=mixamo`
+
 ## Build
 
 ```bash

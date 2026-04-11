@@ -1,12 +1,12 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { SimpleSkeletonHelper, setWireframeForObject, ServerSkeletonHelper } from './utils/renderUtils.js';
 
 import { PoseStream } from "./network.js";
 import { Retargeter } from "./retargeter.js";
 import type { PoseFrame } from "./types.js";
 import { loadYBotFbx } from './loadfbx.js';
+import { createProceduralHumanoid } from './proceduralRig.js';
 import { quatFromArray, vec3FromArray, slerpQuat, lerpVec3 } from './utils.js';
 
 // Simple TypeScript favicon injector: creates an inline SVG and sets it as the
@@ -571,6 +571,8 @@ let skeletonHelper: any = null;
 let modelRoot: THREE.Object3D | null = null;
 let serverSkeletonHelper: ServerSkeletonHelper | null = null;
 let modelBonesByName: Map<string, THREE.Object3D> | null = null;
+const avatarParam = new URLSearchParams(window.location.search).get('avatar');
+const useProceduralAvatar = avatarParam !== 'mixamo';
 
 function persistRenderOptions() {
   try { localStorage.setItem('ps_render_opts', JSON.stringify(renderOptions)); } catch (e) { }
@@ -619,68 +621,81 @@ function applyRenderOptions() {
 
 (async () => {
   try {
-    const model = await loadYBotFbx('/models/y-bot/y-bot.fbx');
+    if (useProceduralAvatar) {
+      const procedural = createProceduralHumanoid();
+      skinned = procedural.skinnedMesh;
+      modelRoot = procedural.root;
+      scene.add(modelRoot);
+      statusEl.textContent = 'Procedural rig ready';
+    } else {
+      const model = await loadYBotFbx('/models/y-bot/y-bot.fbx');
 
-    // Find first SkinnedMesh
-    skinned = null;
-    model.traverse((obj) => {
-      if ((obj as THREE.SkinnedMesh).isSkinnedMesh) skinned = obj as THREE.SkinnedMesh;
-    });
+      // Find first SkinnedMesh
+      skinned = null;
+      model.traverse((obj) => {
+        if ((obj as THREE.SkinnedMesh).isSkinnedMesh) skinned = obj as THREE.SkinnedMesh;
+      });
 
-    if (!skinned) {
-      console.error('No SkinnedMesh found in Y_Bot.fbx');
+      if (!skinned) {
+        console.error('No SkinnedMesh found in Y_Bot.fbx');
+        statusEl.textContent = 'Model error';
+        return;
+      }
+
+      scene.add(model);
+      modelRoot = model;
+      statusEl.textContent = 'Mixamo model ready';
+    }
+
+    if (!skinned || !modelRoot) {
       statusEl.textContent = 'Model error';
       return;
     }
 
     // Reset to bind pose
-    (skinned as THREE.SkinnedMesh).skeleton.pose();
-
-    scene.add(model);
-    modelRoot = model;
+    skinned.skeleton.pose();
 
     // Apply initial shadow/cast settings from options
-    if (skinned) {
-      // initial apply on entire model
-      // (applyRenderOptions will set per-mesh flags too)
-      // create skeleton helper and respect visibility flag
-      try {
-        skeletonHelper = new SimpleSkeletonHelper(skinned as any);
-        skeletonHelper.visible = !!renderOptions.debugSkeleton;
-        scene.add(skeletonHelper.mesh);
-      } catch (e) {
-        console.warn('Failed to create SimpleSkeletonHelper:', e);
-        skeletonHelper = null;
-      }
-      // set wireframe if requested
-      setWireframeForObject(modelRoot!, !!renderOptions.wireframe);
-      // Build a quick lookup of model bones by several key formats so the
-      // ServerSkeletonHelper can place joints at the model's bone positions.
-      try {
-        const map = new Map<string, THREE.Object3D>();
-        if ((skinned as any).skeleton && Array.isArray((skinned as any).skeleton.bones)) {
-          for (const b of (skinned as any).skeleton.bones as THREE.Object3D[]) {
-            map.set(b.name, b);
-            map.set(`mixamorig:${b.name}`, b);
-            const norm = b.name.toLowerCase().replace(/[^a-z0-9]/g, '');
-            map.set(norm, b);
-          }
-        }
-        modelBonesByName = map;
-      } catch (e) { modelBonesByName = null; }
-      // Apply full render options to modelRoot
-      applyRenderOptions();
+    // initial apply on entire model
+    // (applyRenderOptions will set per-mesh flags too)
+    // create skeleton helper and respect visibility flag
+    try {
+      skeletonHelper = new SimpleSkeletonHelper(skinned as any);
+      skeletonHelper.visible = !!renderOptions.debugSkeleton;
+      scene.add(skeletonHelper.mesh);
+    } catch (e) {
+      console.warn('Failed to create SimpleSkeletonHelper:', e);
+      skeletonHelper = null;
     }
+    // set wireframe if requested
+    setWireframeForObject(modelRoot, !!renderOptions.wireframe);
+    // Build a quick lookup of model bones by several key formats so the
+    // ServerSkeletonHelper can place joints at the model's bone positions.
+    try {
+      const map = new Map<string, THREE.Object3D>();
+      if ((skinned as any).skeleton && Array.isArray((skinned as any).skeleton.bones)) {
+        for (const b of (skinned as any).skeleton.bones as THREE.Object3D[]) {
+          map.set(b.name, b);
+          map.set(`mixamorig:${b.name}`, b);
+          const norm = b.name.toLowerCase().replace(/[^a-z0-9]/g, '');
+          map.set(norm, b);
+        }
+      }
+      modelBonesByName = map;
+    } catch (e) { modelBonesByName = null; }
+    // Apply full render options to modelRoot
+    applyRenderOptions();
 
-    retargeter = new Retargeter(skinned!, {
-      rootScale: 1.0 // set to 1.0 because we scaled model by 0.01 already
+    retargeter = new Retargeter(skinned, {
+      rootScale: 1.0,
+      frameYawDeg: 0,
       // corrections: { LeftForeArm: new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1,0,0), Math.PI/2) }
     });
 
-    statusEl.textContent = 'Model ready';
+    statusEl.textContent = useProceduralAvatar ? 'Procedural avatar ready' : 'Model ready';
   } catch (e) {
     console.error(e);
-    statusEl.textContent = 'Failed to load Y_Bot.fbx';
+    statusEl.textContent = 'Failed to initialize avatar';
   }
 })();
 

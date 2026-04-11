@@ -13,6 +13,24 @@ type JointConstraint = {
 
 type MotionProfile = 'default' | 'procedural';
 
+type RetargeterOptions = {
+  rootScale?: number;
+  corrections?: Record<string, Quaternion>;
+  frameYawDeg?: number;
+  motionProfile?: MotionProfile;
+  rootDriverObject?: Object3D | null;
+  jointMotionGain?: number;
+  rootPosSmoothing?: number;
+  rootRotSmoothing?: number;
+  rootMotionGainXZ?: number;
+  rootMotionGainY?: number;
+  root2dGainX?: number;
+  root2dGainY?: number;
+  root2dGainZ?: number;
+  groundCharacter?: boolean;
+  groundY?: number;
+};
+
 export class Retargeter {
   private mesh: SkinnedMesh;
   private skeleton: SkinnedMesh['skeleton'];
@@ -47,6 +65,15 @@ export class Retargeter {
   private rootPosSmoothing = 0.28;
   private rootRotSmoothing = 0.24;
   private jointMotionGain = 1.0;
+  private jointGainByName = new Map<string, number>();
+  private keepGrounded = false;
+  private groundY = 0.0;
+  private groundPenetrationEpsilon = 0.008;
+
+  private leftFootBone: Bone | null = null;
+  private rightFootBone: Bone | null = null;
+  private leftToeBone: Bone | null = null;
+  private rightToeBone: Bone | null = null;
 
   // Temp objects reused each frame.
   private _qa = new Quaternion();
@@ -56,6 +83,7 @@ export class Retargeter {
   private _vs = new Vector3();
   private _vt = new Vector3();
   private _vu = new Vector3();
+  private _vw = new Vector3();
   private _identity = new Quaternion();
   private _tmpForward = new Vector3();
   private _upAxis = new Vector3(0, 1, 0);
@@ -104,21 +132,7 @@ export class Retargeter {
     maxStepDeg: 25,
   };
 
-  constructor(skinnedMesh: SkinnedMesh, options?: {
-    rootScale?: number;
-    corrections?: Record<string, Quaternion>;
-    frameYawDeg?: number;
-    motionProfile?: MotionProfile;
-    rootDriverObject?: Object3D | null;
-    jointMotionGain?: number;
-    rootPosSmoothing?: number;
-    rootRotSmoothing?: number;
-    rootMotionGainXZ?: number;
-    rootMotionGainY?: number;
-    root2dGainX?: number;
-    root2dGainY?: number;
-    root2dGainZ?: number;
-  }) {
+  constructor(skinnedMesh: SkinnedMesh, options?: RetargeterOptions) {
     this.mesh = skinnedMesh;
     this.skeleton = skinnedMesh.skeleton;
     this.rootScale = options?.rootScale ?? 1.0;
@@ -154,6 +168,10 @@ export class Retargeter {
       ? this.mesh.parent
       : null;
     this.rootDriver = options?.rootDriverObject ?? preferredParent ?? this.resolveRootDriver(this.rootBone);
+    this.leftFootBone = this.findBoneByName('LeftFoot') ?? null;
+    this.rightFootBone = this.findBoneByName('RightFoot') ?? null;
+    this.leftToeBone = this.findBoneByName('LeftToeBase') ?? null;
+    this.rightToeBone = this.findBoneByName('RightToeBase') ?? null;
 
     this.rootBindPos.copy(this.rootBone.position);
     this.rootBindRot.copy(this.rootBone.quaternion);
@@ -161,6 +179,10 @@ export class Retargeter {
       this.rootDriverBindPos.copy(this.rootDriver.position);
       this.rootDriverBindRot.copy(this.rootDriver.quaternion);
     }
+    this.keepGrounded = !!options?.groundCharacter;
+    this.groundY = typeof options?.groundY === 'number'
+      ? options.groundY
+      : (this.rootDriver ? this.rootDriverBindPos.y : this.rootBindPos.y);
 
     for (const b of this.skeleton.bones) {
       this.bindLocalByBoneName.set(b.name, b.quaternion.clone());
@@ -311,13 +333,13 @@ export class Retargeter {
   private applyProceduralMotionProfile(): void {
     // Procedural avatar can tolerate a punchier response than Mixamo.
     this.rootMotionGainXZ = 1.9;
-    this.rootMotionGainY = 1.25;
+    this.rootMotionGainY = 0.0;
     this.root2dGainX = 3.4;
     this.root2dGainY = 2.9;
     this.root2dGainZ = 1.6;
     this.rootPosSmoothing = 0.58;
     this.rootRotSmoothing = 0.50;
-    this.jointMotionGain = 1.32;
+    this.jointMotionGain = 1.18;
 
     this.defaultConstraint = {
       maxSwingDeg: 108,
@@ -336,10 +358,25 @@ export class Retargeter {
         maxStepDeg: cfg.maxStepDeg * 1.9,
       });
     }
+
+    // Lower body should remain stable and grounded while upper body can be expressive.
+    this.constraints.set('LeftUpLeg', { maxSwingDeg: 74, twistMinDeg: -22, twistMaxDeg: 22, smoothing: 0.52, maxStepDeg: 18 });
+    this.constraints.set('RightUpLeg', { maxSwingDeg: 74, twistMinDeg: -22, twistMaxDeg: 22, smoothing: 0.52, maxStepDeg: 18 });
+    this.constraints.set('LeftLeg', { maxSwingDeg: 92, twistMinDeg: -16, twistMaxDeg: 16, smoothing: 0.56, maxStepDeg: 16 });
+    this.constraints.set('RightLeg', { maxSwingDeg: 92, twistMinDeg: -16, twistMaxDeg: 16, smoothing: 0.56, maxStepDeg: 16 });
+    this.constraints.set('LeftFoot', { maxSwingDeg: 42, twistMinDeg: -14, twistMaxDeg: 14, smoothing: 0.62, maxStepDeg: 14 });
+    this.constraints.set('RightFoot', { maxSwingDeg: 42, twistMinDeg: -14, twistMaxDeg: 14, smoothing: 0.62, maxStepDeg: 14 });
+
+    this.jointGainByName.clear();
+    const expressive = ['Spine', 'Spine1', 'Spine2', 'Neck', 'Head', 'LeftShoulder', 'RightShoulder', 'LeftArm', 'RightArm', 'LeftForeArm', 'RightForeArm', 'LeftHand', 'RightHand'];
+    const lowerBody = ['LeftUpLeg', 'RightUpLeg', 'LeftLeg', 'RightLeg', 'LeftFoot', 'RightFoot'];
+    for (const n of expressive) this.jointGainByName.set(n, 1.38);
+    for (const n of lowerBody) this.jointGainByName.set(n, 0.88);
   }
 
-  private amplifyLocalTarget(localTarget: Quaternion, bindLocal: Quaternion): Quaternion {
-    if (Math.abs(this.jointMotionGain - 1.0) < 1e-3) {
+  private amplifyLocalTarget(localTarget: Quaternion, bindLocal: Quaternion, jointName: string): Quaternion {
+    const gain = clamp(this.jointGainByName.get(jointName) ?? this.jointMotionGain, 0.5, 2.6);
+    if (Math.abs(gain - 1.0) < 1e-3) {
       return localTarget;
     }
 
@@ -355,9 +392,40 @@ export class Retargeter {
       ? new Vector3(1, 0, 0)
       : new Vector3(delta.x / s, delta.y / s, delta.z / s).normalize();
     const amplifiedDelta = new Quaternion()
-      .setFromAxisAngle(axis, angle * this.jointMotionGain)
+      .setFromAxisAngle(axis, angle * gain)
       .normalize();
     return bindLocal.clone().multiply(amplifiedDelta).normalize();
+  }
+
+  private getMinTrackedFootY(): number | null {
+    const probes: Array<Bone | null> = [
+      this.leftFootBone,
+      this.rightFootBone,
+      this.leftToeBone,
+      this.rightToeBone,
+    ];
+    let found = false;
+    let minY = Number.POSITIVE_INFINITY;
+    for (const bone of probes) {
+      if (!bone) continue;
+      bone.getWorldPosition(this._vw);
+      minY = Math.min(minY, this._vw.y);
+      found = true;
+    }
+    return found ? minY : null;
+  }
+
+  private applyFootGroundingCorrection(): void {
+    const minFootY = this.getMinTrackedFootY();
+    if (minFootY === null) return;
+
+    const penetration = this.groundY - minFootY;
+    if (penetration <= this.groundPenetrationEpsilon) return;
+
+    const lift = penetration * 0.92;
+    const mover = this.rootDriver ?? this.rootBone;
+    mover.position.y += lift;
+    this._rootPosFiltered.y += lift;
   }
 
   /**
@@ -462,7 +530,7 @@ export class Retargeter {
       ?? this.axisLocalByJoint.get(jointName)
       ?? new Vector3(1, 0, 0);
 
-    const targetWithGain = this.amplifyLocalTarget(localTarget, bindLocal);
+    const targetWithGain = this.amplifyLocalTarget(localTarget, bindLocal, jointName);
     const constrained = this.constrainLocalQuaternion(targetWithGain, bindLocal, axisLocal, cfg);
     const prev = this.prevLocalByBoneName.get(bone.name) ?? bindLocal.clone();
 
@@ -550,9 +618,12 @@ export class Retargeter {
     const delta = this._vr.copy(p).sub(this.rootSourceOrigin);
     const rootPosBase = this.rootDriver ? this.rootDriverBindPos : this.rootBindPos;
     const rootRotBase = this.rootDriver ? this.rootDriverBindRot : this.rootBindRot;
+    const targetY = this.keepGrounded
+      ? this.groundY
+      : (rootPosBase.y + delta.y * this.rootMotionGainY);
     const rootTargetPos = new Vector3(
       rootPosBase.x + delta.x * this.rootMotionGainXZ,
-      rootPosBase.y + delta.y * this.rootMotionGainY,
+      targetY,
       rootPosBase.z + delta.z * this.rootMotionGainXZ,
     );
     const rootTargetRot = rootRotBase.clone().multiply(this.extractYawQuaternion(q));
@@ -673,6 +744,10 @@ export class Retargeter {
 
     // Upload to GPU
     this.skeleton.update();
+
+    if (this.keepGrounded) {
+      this.applyFootGroundingCorrection();
+    }
 
     // record profiling info
     const tEnd = (typeof performance !== 'undefined') ? performance.now() : Date.now();

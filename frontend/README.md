@@ -50,6 +50,9 @@ The procedural avatar also uses a dedicated high-response retarget profile,
 with stronger motion amplification and world-relative root motion so movement
 is easier to read.
 
+For procedural mode, the avatar root is grounded to the world floor (`y=0`)
+and feet are corrected if they penetrate below the ground plane.
+
 ## Build
 
 ```bash

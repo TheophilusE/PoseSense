@@ -57,6 +57,11 @@ Procedural mode also runs an analytic two-bone IK pass for each leg using
 backend intermediate targets (`left_knee`/`left_ankle`, `right_knee`/`right_ankle`)
 to keep knees bending naturally and reduce floating-leg artifacts.
 
+To reduce foot sliding, procedural mode includes stance-foot locking plus
+pelvis support shifting toward the planted foot. Retarget smoothing is also
+velocity-aware so quick intentional motion stays responsive while idle jitter
+remains damped.
+
 ## Build
 
 ```bash

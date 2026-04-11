@@ -32,6 +32,13 @@ type RetargeterOptions = {
   groundY?: number;
 };
 
+type FootLockState = {
+  initialized: boolean;
+  locked: boolean;
+  lockPos: Vector3;
+  prevTarget: Vector3;
+};
+
 export class Retargeter {
   private mesh: SkinnedMesh;
   private skeleton: SkinnedMesh['skeleton'];
@@ -72,6 +79,26 @@ export class Retargeter {
   private groundPenetrationEpsilon = 0.008;
   private enableLegIK = false;
   private legTargetSmoothing = 0.58;
+  private footPlantHeight = 0.055;
+  private footPlantVelEnter = 0.014;
+  private footPlantVelExit = 0.045;
+  private footLiftUnlockHeight = 0.10;
+  private pelvisShiftStrengthSingle = 0.22;
+  private pelvisShiftStrengthDouble = 0.10;
+  private pelvisShiftMaxStep = 0.05;
+
+  private leftFootLock: FootLockState = {
+    initialized: false,
+    locked: false,
+    lockPos: new Vector3(),
+    prevTarget: new Vector3(),
+  };
+  private rightFootLock: FootLockState = {
+    initialized: false,
+    locked: false,
+    lockPos: new Vector3(),
+    prevTarget: new Vector3(),
+  };
 
   private leftUpLegBone: Bone | null = null;
   private rightUpLegBone: Bone | null = null;
@@ -112,6 +139,7 @@ export class Retargeter {
   private _ikV8 = new Vector3();
   private _ikV9 = new Vector3();
   private _ikV10 = new Vector3();
+  private _supportTarget = new Vector3();
   private _identity = new Quaternion();
   private _ikQ1 = new Quaternion();
   private _ikQ2 = new Quaternion();
@@ -382,6 +410,13 @@ export class Retargeter {
     this.rootPosSmoothing = 0.58;
     this.rootRotSmoothing = 0.50;
     this.jointMotionGain = 1.18;
+    this.footPlantHeight = 0.058;
+    this.footPlantVelEnter = 0.013;
+    this.footPlantVelExit = 0.040;
+    this.footLiftUnlockHeight = 0.105;
+    this.pelvisShiftStrengthSingle = 0.24;
+    this.pelvisShiftStrengthDouble = 0.12;
+    this.pelvisShiftMaxStep = 0.055;
 
     this.defaultConstraint = {
       maxSwingDeg: 108,
@@ -414,6 +449,82 @@ export class Retargeter {
     const lowerBody = ['LeftUpLeg', 'RightUpLeg', 'LeftLeg', 'RightLeg', 'LeftFoot', 'RightFoot'];
     for (const n of expressive) this.jointGainByName.set(n, 1.38);
     for (const n of lowerBody) this.jointGainByName.set(n, 0.88);
+  }
+
+  private updateFootLockState(state: FootLockState, targetWorld: Vector3): void {
+    if (!state.initialized) {
+      state.initialized = true;
+      state.prevTarget.copy(targetWorld);
+      state.lockPos.copy(targetWorld);
+      return;
+    }
+
+    const speed = targetWorld.distanceTo(state.prevTarget);
+    const lift = targetWorld.y - this.groundY;
+
+    if (state.locked) {
+      const shouldUnlock = (lift > this.footLiftUnlockHeight) || (speed > this.footPlantVelExit);
+      if (shouldUnlock) {
+        state.locked = false;
+        state.lockPos.copy(targetWorld);
+      } else {
+        // Allow tiny drift to avoid jitter when locked.
+        state.lockPos.lerp(targetWorld, 0.03);
+      }
+    } else if (this.keepGrounded) {
+      const shouldLock = (lift < this.footPlantHeight) && (speed < this.footPlantVelEnter);
+      if (shouldLock) {
+        state.locked = true;
+        state.lockPos.copy(targetWorld);
+      } else {
+        state.lockPos.copy(targetWorld);
+      }
+    } else {
+      state.lockPos.copy(targetWorld);
+    }
+
+    state.prevTarget.copy(targetWorld);
+  }
+
+  private applySupportPelvisShift(): void {
+    if (!this.keepGrounded) return;
+
+    const mover = this.rootDriver ?? this.rootBone;
+    const leftLocked = this.leftFootLock.locked;
+    const rightLocked = this.rightFootLock.locked;
+
+    if (!leftLocked && !rightLocked) return;
+
+    this._supportTarget.set(0, 0, 0);
+    let count = 0;
+    if (leftLocked) {
+      this._supportTarget.add(this.leftFootLock.lockPos);
+      count += 1;
+    }
+    if (rightLocked) {
+      this._supportTarget.add(this.rightFootLock.lockPos);
+      count += 1;
+    }
+    if (count <= 0) return;
+
+    this._supportTarget.multiplyScalar(1 / count);
+    const strength = count === 1 ? this.pelvisShiftStrengthSingle : this.pelvisShiftStrengthDouble;
+
+    const dx = (this._supportTarget.x - mover.position.x) * strength;
+    const dz = (this._supportTarget.z - mover.position.z) * strength;
+    const mag = Math.hypot(dx, dz);
+    let sx = dx;
+    let sz = dz;
+    if (mag > this.pelvisShiftMaxStep && mag > 1e-6) {
+      const scale = this.pelvisShiftMaxStep / mag;
+      sx *= scale;
+      sz *= scale;
+    }
+
+    mover.position.x += sx;
+    mover.position.z += sz;
+    this._rootPosFiltered.x += sx;
+    this._rootPosFiltered.z += sz;
   }
 
   private amplifyLocalTarget(localTarget: Quaternion, bindLocal: Quaternion, jointName: string): Quaternion {
@@ -512,11 +623,8 @@ export class Retargeter {
 
     out.copy(this._rootPosFiltered).add(this._ikV3);
     if (this.keepGrounded) {
-      // Plant feet when they are near the ground while still allowing clear foot lifts.
-      const lift = out.y - this.groundY;
-      if (lift < 0.16) {
-        out.y = this.groundY + 0.014;
-      }
+      // Prevent below-floor targets while preserving true lift trajectories.
+      out.y = Math.max(out.y, this.groundY + 0.014);
     }
     return true;
   }
@@ -620,11 +728,21 @@ export class Retargeter {
     if (!hasLeftTarget && !hasRightTarget) return;
 
     if (hasLeftTarget) {
+      this.updateFootLockState(this.leftFootLock, this._ikV4);
+    }
+    if (hasRightTarget) {
+      this.updateFootLockState(this.rightFootLock, this._ikV5);
+    }
+
+    this.applySupportPelvisShift();
+
+    if (hasLeftTarget) {
+      const leftDesired = this.leftFootLock.locked ? this.leftFootLock.lockPos : this._ikV4;
       if (!this.leftLegTargetInitialized) {
-        this.leftLegTargetFiltered.copy(this._ikV4);
+        this.leftLegTargetFiltered.copy(leftDesired);
         this.leftLegTargetInitialized = true;
       } else {
-        this.leftLegTargetFiltered.lerp(this._ikV4, this.legTargetSmoothing);
+        this.leftLegTargetFiltered.lerp(leftDesired, this.legTargetSmoothing);
       }
       const leftPole = this.getLegPoleWorld(
         a,
@@ -648,11 +766,12 @@ export class Retargeter {
     }
 
     if (hasRightTarget) {
+      const rightDesired = this.rightFootLock.locked ? this.rightFootLock.lockPos : this._ikV5;
       if (!this.rightLegTargetInitialized) {
-        this.rightLegTargetFiltered.copy(this._ikV5);
+        this.rightLegTargetFiltered.copy(rightDesired);
         this.rightLegTargetInitialized = true;
       } else {
-        this.rightLegTargetFiltered.lerp(this._ikV5, this.legTargetSmoothing);
+        this.rightLegTargetFiltered.lerp(rightDesired, this.legTargetSmoothing);
       }
       const rightPole = this.getLegPoleWorld(
         a,
@@ -790,7 +909,14 @@ export class Retargeter {
       stepLimited = prev.clone().slerp(constrained, t);
     }
 
-    const smoothed = prev.clone().slerp(stepLimited, clamp(cfg.smoothing, 0.01, 1.0));
+    // Velocity-aware smoothing: keep tiny motions stable but react quickly to intentional movement.
+    const motionIntent = clamp(angleToTarget / MathUtils.degToRad(22), 0, 1);
+    const adaptiveSmoothing = clamp(
+      cfg.smoothing + ((1 - cfg.smoothing) * motionIntent * 0.85),
+      0.01,
+      1.0,
+    );
+    const smoothed = prev.clone().slerp(stepLimited, adaptiveSmoothing);
     bone.quaternion.copy(smoothed);
     this.prevLocalByBoneName.set(bone.name, smoothed.clone());
   }
@@ -882,8 +1008,12 @@ export class Retargeter {
       this._rootRotFiltered.copy(rootTargetRot);
       this._rootInitialized = true;
     } else {
-      this._rootPosFiltered.lerp(rootTargetPos, this.rootPosSmoothing);
-      this._rootRotFiltered.slerp(rootTargetRot, this.rootRotSmoothing);
+      const posIntent = clamp(this._ikV10.copy(rootTargetPos).sub(this._rootPosFiltered).length() / 0.08, 0, 1);
+      const rotIntent = clamp(this._rootRotFiltered.angleTo(rootTargetRot) / MathUtils.degToRad(30), 0, 1);
+      const posBlend = clamp(this.rootPosSmoothing + ((1 - this.rootPosSmoothing) * posIntent * 0.7), 0.01, 1.0);
+      const rotBlend = clamp(this.rootRotSmoothing + ((1 - this.rootRotSmoothing) * rotIntent * 0.7), 0.01, 1.0);
+      this._rootPosFiltered.lerp(rootTargetPos, posBlend);
+      this._rootRotFiltered.slerp(rootTargetRot, rotBlend);
     }
 
     if (this.rootDriver) {

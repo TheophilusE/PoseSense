@@ -33,10 +33,12 @@ In the in-app Render panel you can toggle:
 
 ## Avatar Selection
 
-The frontend now defaults to a procedural humanoid rig (no FBX dependency).
+The frontend now defaults to a direct server-driven body mesh. This mode bypasses
+retargeting and renders mesh segments directly from backend intermediate targets.
 
-- Procedural avatar (default): open the app normally.
-- Mixamo Y-Bot (optional): add `?avatar=mixamo` to the frontend URL.
+- Direct server mesh (default): open the app normally.
+- Procedural avatar (optional): add `?avatar=procedural`.
+- Mixamo Y-Bot (optional): add `?avatar=mixamo`.
 
 Example:
 

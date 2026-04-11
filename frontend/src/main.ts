@@ -7,6 +7,7 @@ import { Retargeter } from "./retargeter.js";
 import type { PoseFrame } from "./types.js";
 import { loadYBotFbx } from './loadfbx.js';
 import { createProceduralHumanoid } from './proceduralRig.js';
+import { ServerBodyMesh } from './serverBodyMesh.js';
 import { quatFromArray, vec3FromArray, slerpQuat, lerpVec3 } from './utils.js';
 
 // Simple TypeScript favicon injector: creates an inline SVG and sets it as the
@@ -284,6 +285,19 @@ const renderOptions = (() => {
   return { ...defaultRenderOptions };
 })();
 
+const avatarParam = new URLSearchParams(window.location.search).get('avatar');
+const avatarMode = (avatarParam === 'mixamo' || avatarParam === 'procedural' || avatarParam === 'direct')
+  ? avatarParam
+  : 'direct';
+const useDirectServerAvatar = avatarMode === 'direct';
+const useProceduralAvatar = avatarMode === 'procedural';
+
+if (useDirectServerAvatar) {
+  // Direct mode is specifically meant to compare against server skeleton output.
+  renderOptions.showSkinnedMesh = true;
+  renderOptions.serverSkeleton = true;
+}
+
 // Enable physically-correct lighting and soft shadows for a studio look
 renderer.shadowMap.enabled = !!renderOptions.shadows;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -482,7 +496,9 @@ if (optMlOverlay) optMlOverlay.checked = !!renderOptions.mlPoseOverlay;
 
 function updateRenderIndicator() {
   if (!renderIndicator) return;
-  const mode = renderOptions.debugSkeleton ? 'Debug Skeleton' : 'Skinned Mesh';
+  const mode = useDirectServerAvatar
+    ? 'Direct Server Mesh'
+    : (renderOptions.debugSkeleton ? 'Debug Skeleton' : 'Skinned Mesh');
   const flags: string[] = [];
   if (renderOptions.shadows) flags.push('Shadows');
   if (renderOptions.wireframe) flags.push('Wireframe');
@@ -570,9 +586,8 @@ let skinned: THREE.SkinnedMesh | null = null;
 let skeletonHelper: any = null;
 let modelRoot: THREE.Object3D | null = null;
 let serverSkeletonHelper: ServerSkeletonHelper | null = null;
+let serverBodyMesh: ServerBodyMesh | null = null;
 let modelBonesByName: Map<string, THREE.Object3D> | null = null;
-const avatarParam = new URLSearchParams(window.location.search).get('avatar');
-const useProceduralAvatar = avatarParam !== 'mixamo';
 
 function persistRenderOptions() {
   try { localStorage.setItem('ps_render_opts', JSON.stringify(renderOptions)); } catch (e) { }
@@ -621,6 +636,15 @@ function applyRenderOptions() {
 
 (async () => {
   try {
+    if (useDirectServerAvatar) {
+      serverBodyMesh = new ServerBodyMesh();
+      modelRoot = serverBodyMesh.root;
+      scene.add(modelRoot);
+      applyRenderOptions();
+      statusEl.textContent = 'Direct server mesh ready';
+      return;
+    }
+
     if (useProceduralAvatar) {
       const procedural = createProceduralHumanoid();
       skinned = procedural.skinnedMesh;
@@ -708,6 +732,107 @@ function applyRenderOptions() {
 const wsUrl = `ws://${location.hostname}:8000/ws`;
 const stream = new PoseStream(wsUrl, (s) => { statusEl.textContent = s; });
 
+type StreamSample = ReturnType<PoseStream['pollInterpolated']>;
+
+function readTargetTuple(map: Record<string, any> | null, key: string): [number, number, number] | null {
+  if (!map) return null;
+  const raw = map[key];
+  if (!Array.isArray(raw) || raw.length < 3) return null;
+
+  const x = Number(raw[0]);
+  const y = Number(raw[1]);
+  const z = Number(raw[2]);
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null;
+  return [x, y, z];
+}
+
+function interpolateTargetMaps(aMapRaw: any, bMapRaw: any, alpha: number): Record<string, [number, number, number]> | undefined {
+  const aMap = (aMapRaw && typeof aMapRaw === 'object') ? (aMapRaw as Record<string, any>) : null;
+  const bMap = (bMapRaw && typeof bMapRaw === 'object') ? (bMapRaw as Record<string, any>) : null;
+  if (!aMap && !bMap) return undefined;
+
+  const out: Record<string, [number, number, number]> = {};
+  const keys = new Set<string>([
+    ...Object.keys(aMap ?? {}),
+    ...Object.keys(bMap ?? {}),
+  ]);
+
+  for (const key of keys) {
+    const a = readTargetTuple(aMap, key);
+    const b = readTargetTuple(bMap, key);
+    if (!a && !b) continue;
+
+    if (a && b) {
+      out[key] = [
+        a[0] + ((b[0] - a[0]) * alpha),
+        a[1] + ((b[1] - a[1]) * alpha),
+        a[2] + ((b[2] - a[2]) * alpha),
+      ];
+    } else {
+      out[key] = (a ?? b)!;
+    }
+  }
+
+  return Object.keys(out).length ? out : undefined;
+}
+
+function buildFrameForVisualization(sample: StreamSample): PoseFrame | null {
+  if (!sample) return null;
+  if (sample.kind === 'hold') return sample.data;
+
+  const a = sample.a;
+  const b = sample.b;
+  const alpha = sample.alpha;
+
+  const ra = (a.root && Array.isArray(a.root.position)) ? vec3FromArray(a.root.position as [number, number, number]) : new THREE.Vector3();
+  const rb = (b.root && Array.isArray(b.root.position)) ? vec3FromArray(b.root.position as [number, number, number]) : new THREE.Vector3();
+  const rp = lerpVec3(new THREE.Vector3(), ra, rb, alpha);
+
+  const rqa = (a.root && Array.isArray(a.root.rotation)) ? quatFromArray(a.root.rotation as [number, number, number, number]) : new THREE.Quaternion();
+  const rqb = (b.root && Array.isArray(b.root.rotation)) ? quatFromArray(b.root.rotation as [number, number, number, number]) : new THREE.Quaternion();
+  const rqi = slerpQuat(new THREE.Quaternion(), rqa, rqb, alpha);
+
+  const ma = new Map<string, any>();
+  const mb = new Map<string, any>();
+  if (Array.isArray(a.joints)) for (const j of a.joints) ma.set(j.name, j.rotation);
+  if (Array.isArray(b.joints)) for (const j of b.joints) mb.set(j.name, j.rotation);
+  const jointNames = Array.from(new Set([
+    ...(Array.isArray(a.joints) ? a.joints.map((j: any) => j.name) : []),
+    ...(Array.isArray(b.joints) ? b.joints.map((j: any) => j.name) : []),
+  ]));
+  const joints: any[] = [];
+  for (const name of jointNames) {
+    const raArr = ma.get(name) as [number, number, number, number] | undefined;
+    const rbArr = mb.get(name) as [number, number, number, number] | undefined;
+    const qa = raArr ? quatFromArray(raArr) : new THREE.Quaternion();
+    const qb = rbArr ? quatFromArray(rbArr) : new THREE.Quaternion();
+    const qi = slerpQuat(new THREE.Quaternion(), qa, qb, alpha);
+    joints.push({ name, rotation: [qi.w, qi.x, qi.y, qi.z] });
+  }
+
+  const aMeta = a.meta as any;
+  const bMeta = b.meta as any;
+  const interpolatedTargets = interpolateTargetMaps(
+    aMeta?.intermediate_targets ?? aMeta?.intermediate_targets_raw,
+    bMeta?.intermediate_targets ?? bMeta?.intermediate_targets_raw,
+    alpha,
+  );
+  const mergedMeta = {
+    ...(a.meta ?? {}),
+    ...(b.meta ?? {}),
+  } as any;
+  if (interpolatedTargets) {
+    mergedMeta.intermediate_targets = interpolatedTargets;
+  }
+
+  return {
+    ...b,
+    root: { position: [rp.x, rp.y, rp.z], rotation: [rqi.w, rqi.x, rqi.y, rqi.z] },
+    joints,
+    meta: mergedMeta,
+  };
+}
+
 // Render loop
 const clock = new THREE.Clock();
 let frames = 0;
@@ -755,52 +880,15 @@ function animate(): void {
     }
   }
 
+  const frameForViz = buildFrameForVisualization(sample);
+  if (serverBodyMesh && frameForViz) {
+    serverBodyMesh.updateFromPose(frameForViz);
+  }
+
   // Update server skeleton overlay (lazy create)
   try {
-    if (sample) {
-      // Build an interpolated frame when possible so the server overlay matches
-      // the retargeter's interpolation timing.
-      let frameForViz: any = null;
-      if (sample.kind === 'interp') {
-        const a = sample.a;
-        const b = sample.b;
-        const alpha = sample.alpha;
-        // Interpolate root position
-        const ra = (a.root && Array.isArray(a.root.position)) ? vec3FromArray(a.root.position as [number, number, number]) : new THREE.Vector3();
-        const rb = (b.root && Array.isArray(b.root.position)) ? vec3FromArray(b.root.position as [number, number, number]) : new THREE.Vector3();
-        const rp = lerpVec3(new THREE.Vector3(), ra, rb, alpha);
-
-        // Interpolate root rotation
-        const rqa = (a.root && Array.isArray(a.root.rotation)) ? quatFromArray(a.root.rotation as [number, number, number, number]) : new THREE.Quaternion();
-        const rqb = (b.root && Array.isArray(b.root.rotation)) ? quatFromArray(b.root.rotation as [number, number, number, number]) : new THREE.Quaternion();
-        const rqi = slerpQuat(new THREE.Quaternion(), rqa, rqb, alpha);
-
-        // Interpolate joints by name
-        const ma = new Map<string, any>();
-        const mb = new Map<string, any>();
-        if (Array.isArray(a.joints)) for (const j of a.joints) ma.set(j.name, j.rotation);
-        if (Array.isArray(b.joints)) for (const j of b.joints) mb.set(j.name, j.rotation);
-        const jointNames = Array.from(new Set([...(Array.isArray(a.joints) ? a.joints.map((j: any) => j.name) : []), ...(Array.isArray(b.joints) ? b.joints.map((j: any) => j.name) : [])]));
-        const joints: any[] = [];
-        for (const name of jointNames) {
-          const raArr = ma.get(name) as [number, number, number, number] | undefined;
-          const rbArr = mb.get(name) as [number, number, number, number] | undefined;
-          const qa = raArr ? quatFromArray(raArr) : new THREE.Quaternion();
-          const qb = rbArr ? quatFromArray(rbArr) : new THREE.Quaternion();
-          const qi = slerpQuat(new THREE.Quaternion(), qa, qb, alpha);
-          joints.push({ name, rotation: [qi.w, qi.x, qi.y, qi.z] });
-        }
-
-        frameForViz = {
-          ...b,
-          root: { position: [rp.x, rp.y, rp.z], rotation: [rqi.w, rqi.x, rqi.y, rqi.z] },
-          joints
-        };
-      } else {
-        frameForViz = sample.data;
-      }
-
-      if (!serverSkeletonHelper && frameForViz) {
+    if (frameForViz) {
+      if (!serverSkeletonHelper) {
         const names = Array.isArray(frameForViz.joints) ? frameForViz.joints.map((j: any) => j.name) : [];
         if (names.length) {
           serverSkeletonHelper = new ServerSkeletonHelper(names);
@@ -808,7 +896,7 @@ function animate(): void {
           scene.add(serverSkeletonHelper.mesh);
         }
       }
-      if (serverSkeletonHelper && frameForViz) {
+      if (serverSkeletonHelper) {
         serverSkeletonHelper.updateFromPose(frameForViz, modelBonesByName ?? undefined);
       }
     }
@@ -903,6 +991,8 @@ function animate(): void {
       } catch (e) {
         statRet.textContent = `--`;
       }
+    } else if (useDirectServerAvatar) {
+      statRet.textContent = 'direct mesh';
     }
 
     // reset window accumulators

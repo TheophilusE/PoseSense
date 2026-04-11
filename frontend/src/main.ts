@@ -568,17 +568,71 @@ ground.receiveShadow = true;
 ground.position.y = 0;
 scene.add(ground);
 
-// Backdrop: large curved paper-like plane behind the model
-const backdropMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.8, metalness: 0, side: THREE.DoubleSide });
-const backdrop = new THREE.Mesh(new THREE.PlaneGeometry(40, 18), backdropMat);
-backdrop.position.set(0, 4.5, -6);
-scene.add(backdrop);
-
 // Subtle grid helper on the ground for studio reference
 const grid = new THREE.GridHelper(20, 40, 0xe6eef6, 0xe6eef6);
 grid.material.opacity = 0.6;
 (grid.material as THREE.Material).transparent = true;
 scene.add(grid);
+
+let groundTargetY = ground.position.y;
+const groundOffsetBelowFeet = 0.014;
+const groundFollowSmoothing = 0.28;
+const groundProbe = new THREE.Vector3();
+
+function getGroundYFromModelFeet(): number | null {
+  if (!modelBonesByName) return null;
+
+  const probeKeys = [
+    'LeftFoot', 'RightFoot', 'LeftToeBase', 'RightToeBase',
+    'mixamorig:LeftFoot', 'mixamorig:RightFoot',
+    'mixamorig:LeftToeBase', 'mixamorig:RightToeBase',
+    'leftfoot', 'rightfoot', 'lefttoebase', 'righttoebase',
+  ];
+  const uniqueBones = new Set<THREE.Object3D>();
+  for (const key of probeKeys) {
+    const bone = modelBonesByName.get(key);
+    if (bone) uniqueBones.add(bone);
+  }
+  if (!uniqueBones.size) return null;
+
+  let minY = Number.POSITIVE_INFINITY;
+  for (const bone of uniqueBones) {
+    bone.getWorldPosition(groundProbe);
+    minY = Math.min(minY, groundProbe.y);
+  }
+  return Number.isFinite(minY) ? minY : null;
+}
+
+function getGroundYFromFrameTargets(frame: PoseFrame | null): number | null {
+  if (!frame) return null;
+  const meta = frame.meta as any;
+  const targets = (meta?.intermediate_targets ?? meta?.intermediate_targets_raw) as Record<string, unknown> | undefined;
+  if (!targets) return null;
+
+  const keys = ['left_foot_index', 'right_foot_index', 'left_foot', 'right_foot', 'left_ankle', 'right_ankle'];
+  let minY = Number.POSITIVE_INFINITY;
+  let found = false;
+  for (const key of keys) {
+    const raw = targets[key];
+    if (!Array.isArray(raw) || raw.length < 3) continue;
+    const y = Number(raw[1]);
+    if (!Number.isFinite(y)) continue;
+    minY = Math.min(minY, y);
+    found = true;
+  }
+  return found ? minY : null;
+}
+
+function updateGroundHeight(frame: PoseFrame | null): void {
+  const modelFootY = getGroundYFromModelFeet();
+  const frameFootY = getGroundYFromFrameTargets(frame);
+  const footY = modelFootY ?? frameFootY;
+  if (footY === null || !Number.isFinite(footY)) return;
+
+  groundTargetY = footY - groundOffsetBelowFeet;
+  ground.position.y += (groundTargetY - ground.position.y) * groundFollowSmoothing;
+  grid.position.y = ground.position.y + 0.002;
+}
 
 // Load Y-Bot FBX
 let retargeter: Retargeter | null = null;
@@ -884,6 +938,7 @@ function animate(): void {
   if (serverBodyMesh && frameForViz) {
     serverBodyMesh.updateFromPose(frameForViz);
   }
+  updateGroundHeight(frameForViz);
 
   // Update server skeleton overlay (lazy create)
   try {

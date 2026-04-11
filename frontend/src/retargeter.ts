@@ -39,6 +39,11 @@ type FootLockState = {
   prevTarget: Vector3;
 };
 
+type HeldPositionState = {
+  initialized: boolean;
+  value: Vector3;
+};
+
 export class Retargeter {
   private mesh: SkinnedMesh;
   private skeleton: SkinnedMesh['skeleton'];
@@ -86,6 +91,7 @@ export class Retargeter {
   private pelvisShiftStrengthSingle = 0.22;
   private pelvisShiftStrengthDouble = 0.10;
   private pelvisShiftMaxStep = 0.05;
+  private kneeHintSmoothing = 0.62;
 
   private leftFootLock: FootLockState = {
     initialized: false,
@@ -98,6 +104,14 @@ export class Retargeter {
     locked: false,
     lockPos: new Vector3(),
     prevTarget: new Vector3(),
+  };
+  private leftKneeHintState: HeldPositionState = {
+    initialized: false,
+    value: new Vector3(),
+  };
+  private rightKneeHintState: HeldPositionState = {
+    initialized: false,
+    value: new Vector3(),
   };
 
   private leftUpLegBone: Bone | null = null;
@@ -140,6 +154,10 @@ export class Retargeter {
   private _ikV9 = new Vector3();
   private _ikV10 = new Vector3();
   private _supportTarget = new Vector3();
+  private _kneeHintL = new Vector3();
+  private _kneeHintR = new Vector3();
+  private _kneePoleL = new Vector3();
+  private _kneePoleR = new Vector3();
   private _identity = new Quaternion();
   private _ikQ1 = new Quaternion();
   private _ikQ2 = new Quaternion();
@@ -527,6 +545,36 @@ export class Retargeter {
     this._rootPosFiltered.z += sz;
   }
 
+  private resolveKneeHintWorld(
+    a: PoseFrame,
+    b: PoseFrame,
+    alpha: number,
+    kneeKey: string,
+    state: HeldPositionState,
+    fallback: Vector3,
+    out: Vector3,
+  ): boolean {
+    const hasKnee = this.getInterpolatedIntermediateRelative(a, b, alpha, kneeKey, this._ikV4);
+    if (hasKnee) {
+      this._ikV4.add(this._rootPosFiltered);
+      if (!state.initialized) {
+        state.initialized = true;
+        state.value.copy(this._ikV4);
+      } else {
+        state.value.lerp(this._ikV4, this.kneeHintSmoothing);
+      }
+      out.copy(state.value);
+      return true;
+    }
+
+    if (!state.initialized) {
+      state.initialized = true;
+      state.value.copy(fallback);
+    }
+    out.copy(state.value);
+    return false;
+  }
+
   private amplifyLocalTarget(localTarget: Quaternion, bindLocal: Quaternion, jointName: string): Quaternion {
     const gain = clamp(this.jointGainByName.get(jointName) ?? this.jointMotionGain, 0.5, 2.6);
     if (Math.abs(gain - 1.0) < 1e-3) {
@@ -643,6 +691,7 @@ export class Retargeter {
     end: Bone,
     targetWorld: Vector3,
     poleWorld: Vector3,
+    kneeHintWorld: Vector3 | null,
     lenUpper: number,
     lenLower: number,
     upperJointName: string,
@@ -679,6 +728,15 @@ export class Retargeter {
     const y = Math.sqrt(Math.max((lenUpper * lenUpper) - (x * x), 0));
     const midTarget = this._vx.copy(this._ikV5).addScaledVector(dir, x).addScaledVector(bend, y);
     const endTarget = this._vy.copy(this._ikV5).addScaledVector(dir, dist);
+
+    if (kneeHintWorld) {
+      // Pull the mid joint toward the observed knee while preserving upper length.
+      const desiredMid = this._ikV10.copy(kneeHintWorld).sub(this._ikV5);
+      if (desiredMid.lengthSq() > 1e-8) {
+        desiredMid.normalize().multiplyScalar(lenUpper).add(this._ikV5);
+        midTarget.lerp(desiredMid, 0.9);
+      }
+    }
 
     upper.getWorldQuaternion(this._ikQ1);
     const curUpperDir = this._vz.copy(this._ikV6).sub(this._ikV5).normalize();
@@ -738,26 +796,36 @@ export class Retargeter {
 
     if (hasLeftTarget) {
       const leftDesired = this.leftFootLock.locked ? this.leftFootLock.lockPos : this._ikV4;
+      const leftFallbackPole = this._ikV6.copy(this.leftLegTargetInitialized ? this.leftLegTargetFiltered : leftDesired).add(new Vector3(0, 0, 0.25));
+      const leftKneeAvailable = this.resolveKneeHintWorld(
+        a,
+        b,
+        alpha,
+        'left_knee',
+        this.leftKneeHintState,
+        leftFallbackPole,
+        this._kneeHintL,
+      );
+
+      // When knee data drops out, keep leg target stationary to avoid drifting knees.
+      if (!leftKneeAvailable && this.leftLegTargetInitialized) {
+        leftDesired.copy(this.leftLegTargetFiltered);
+      }
+
       if (!this.leftLegTargetInitialized) {
         this.leftLegTargetFiltered.copy(leftDesired);
         this.leftLegTargetInitialized = true;
       } else {
         this.leftLegTargetFiltered.lerp(leftDesired, this.legTargetSmoothing);
       }
-      const leftPole = this.getLegPoleWorld(
-        a,
-        b,
-        alpha,
-        'left_knee',
-        this._ikV6.copy(this.leftLegTargetFiltered).add(new Vector3(0, 0, 0.25)),
-        this._ikV7,
-      );
+      const leftPole = this._kneePoleL.copy(this._kneeHintL);
       this.solveTwoBoneIk(
         this.leftUpLegBone,
         this.leftLegBone,
         this.leftFootBone,
         this.leftLegTargetFiltered,
         leftPole,
+        this._kneeHintL,
         this.leftUpperLen,
         this.leftLowerLen,
         'LeftUpLeg',
@@ -767,26 +835,35 @@ export class Retargeter {
 
     if (hasRightTarget) {
       const rightDesired = this.rightFootLock.locked ? this.rightFootLock.lockPos : this._ikV5;
+      const rightFallbackPole = this._ikV8.copy(this.rightLegTargetInitialized ? this.rightLegTargetFiltered : rightDesired).add(new Vector3(0, 0, 0.25));
+      const rightKneeAvailable = this.resolveKneeHintWorld(
+        a,
+        b,
+        alpha,
+        'right_knee',
+        this.rightKneeHintState,
+        rightFallbackPole,
+        this._kneeHintR,
+      );
+
+      if (!rightKneeAvailable && this.rightLegTargetInitialized) {
+        rightDesired.copy(this.rightLegTargetFiltered);
+      }
+
       if (!this.rightLegTargetInitialized) {
         this.rightLegTargetFiltered.copy(rightDesired);
         this.rightLegTargetInitialized = true;
       } else {
         this.rightLegTargetFiltered.lerp(rightDesired, this.legTargetSmoothing);
       }
-      const rightPole = this.getLegPoleWorld(
-        a,
-        b,
-        alpha,
-        'right_knee',
-        this._ikV8.copy(this.rightLegTargetFiltered).add(new Vector3(0, 0, 0.25)),
-        this._ikV9,
-      );
+      const rightPole = this._kneePoleR.copy(this._kneeHintR);
       this.solveTwoBoneIk(
         this.rightUpLegBone,
         this.rightLegBone,
         this.rightFootBone,
         this.rightLegTargetFiltered,
         rightPole,
+        this._kneeHintR,
         this.rightUpperLen,
         this.rightLowerLen,
         'RightUpLeg',

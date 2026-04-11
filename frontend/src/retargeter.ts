@@ -11,6 +11,8 @@ type JointConstraint = {
   maxStepDeg: number;
 };
 
+type MotionProfile = 'default' | 'procedural';
+
 export class Retargeter {
   private mesh: SkinnedMesh;
   private skeleton: SkinnedMesh['skeleton'];
@@ -42,6 +44,9 @@ export class Retargeter {
   private root2dGainX = 2.2;
   private root2dGainY = 1.8;
   private root2dGainZ = 0.9;
+  private rootPosSmoothing = 0.28;
+  private rootRotSmoothing = 0.24;
+  private jointMotionGain = 1.0;
 
   // Temp objects reused each frame.
   private _qa = new Quaternion();
@@ -99,7 +104,21 @@ export class Retargeter {
     maxStepDeg: 25,
   };
 
-  constructor(skinnedMesh: SkinnedMesh, options?: { rootScale?: number; corrections?: Record<string, Quaternion>; frameYawDeg?: number }) {
+  constructor(skinnedMesh: SkinnedMesh, options?: {
+    rootScale?: number;
+    corrections?: Record<string, Quaternion>;
+    frameYawDeg?: number;
+    motionProfile?: MotionProfile;
+    rootDriverObject?: Object3D | null;
+    jointMotionGain?: number;
+    rootPosSmoothing?: number;
+    rootRotSmoothing?: number;
+    rootMotionGainXZ?: number;
+    rootMotionGainY?: number;
+    root2dGainX?: number;
+    root2dGainY?: number;
+    root2dGainZ?: number;
+  }) {
     this.mesh = skinnedMesh;
     this.skeleton = skinnedMesh.skeleton;
     this.rootScale = options?.rootScale ?? 1.0;
@@ -131,7 +150,10 @@ export class Retargeter {
       this.skeleton.bones[0]
     )!;
 
-    this.rootDriver = this.resolveRootDriver(this.rootBone) ?? this.mesh.parent;
+    const preferredParent = (this.mesh.parent && !(this.mesh.parent as any).isBone)
+      ? this.mesh.parent
+      : null;
+    this.rootDriver = options?.rootDriverObject ?? preferredParent ?? this.resolveRootDriver(this.rootBone);
 
     this.rootBindPos.copy(this.rootBone.position);
     this.rootBindRot.copy(this.rootBone.quaternion);
@@ -254,6 +276,88 @@ export class Retargeter {
     this.constraints.set('RightForeArm', { maxSwingDeg: 155, twistMinDeg: -36, twistMaxDeg: 36, smoothing: 0.58, maxStepDeg: 36 });
     this.constraints.set('LeftHand', { maxSwingDeg: 70, twistMinDeg: -30, twistMaxDeg: 30, smoothing: 0.60, maxStepDeg: 28 });
     this.constraints.set('RightHand', { maxSwingDeg: 70, twistMinDeg: -30, twistMaxDeg: 30, smoothing: 0.60, maxStepDeg: 28 });
+
+    const motionProfile = options?.motionProfile ?? 'default';
+    if (motionProfile === 'procedural') {
+      this.applyProceduralMotionProfile();
+    }
+
+    if (typeof options?.jointMotionGain === 'number') {
+      this.jointMotionGain = Math.max(0.5, options.jointMotionGain);
+    }
+    if (typeof options?.rootPosSmoothing === 'number') {
+      this.rootPosSmoothing = clamp(options.rootPosSmoothing, 0.01, 1.0);
+    }
+    if (typeof options?.rootRotSmoothing === 'number') {
+      this.rootRotSmoothing = clamp(options.rootRotSmoothing, 0.01, 1.0);
+    }
+    if (typeof options?.rootMotionGainXZ === 'number') {
+      this.rootMotionGainXZ = Math.max(0.0, options.rootMotionGainXZ);
+    }
+    if (typeof options?.rootMotionGainY === 'number') {
+      this.rootMotionGainY = Math.max(0.0, options.rootMotionGainY);
+    }
+    if (typeof options?.root2dGainX === 'number') {
+      this.root2dGainX = Math.max(0.0, options.root2dGainX);
+    }
+    if (typeof options?.root2dGainY === 'number') {
+      this.root2dGainY = Math.max(0.0, options.root2dGainY);
+    }
+    if (typeof options?.root2dGainZ === 'number') {
+      this.root2dGainZ = Math.max(0.0, options.root2dGainZ);
+    }
+  }
+
+  private applyProceduralMotionProfile(): void {
+    // Procedural avatar can tolerate a punchier response than Mixamo.
+    this.rootMotionGainXZ = 1.9;
+    this.rootMotionGainY = 1.25;
+    this.root2dGainX = 3.4;
+    this.root2dGainY = 2.9;
+    this.root2dGainZ = 1.6;
+    this.rootPosSmoothing = 0.58;
+    this.rootRotSmoothing = 0.50;
+    this.jointMotionGain = 1.32;
+
+    this.defaultConstraint = {
+      maxSwingDeg: 108,
+      twistMinDeg: -62,
+      twistMaxDeg: 62,
+      smoothing: 0.64,
+      maxStepDeg: 56,
+    };
+
+    for (const [name, cfg] of this.constraints.entries()) {
+      this.constraints.set(name, {
+        maxSwingDeg: cfg.maxSwingDeg * 1.2,
+        twistMinDeg: cfg.twistMinDeg * 1.28,
+        twistMaxDeg: cfg.twistMaxDeg * 1.28,
+        smoothing: clamp(cfg.smoothing + 0.20, 0.01, 1.0),
+        maxStepDeg: cfg.maxStepDeg * 1.9,
+      });
+    }
+  }
+
+  private amplifyLocalTarget(localTarget: Quaternion, bindLocal: Quaternion): Quaternion {
+    if (Math.abs(this.jointMotionGain - 1.0) < 1e-3) {
+      return localTarget;
+    }
+
+    const delta = bindLocal.clone().invert().multiply(localTarget).normalize();
+    const w = MathUtils.clamp(delta.w, -1, 1);
+    const angle = 2 * Math.acos(w);
+    if (angle < 1e-6) {
+      return localTarget;
+    }
+
+    const s = Math.sqrt(Math.max(1 - (w * w), 0));
+    const axis = s < 1e-6
+      ? new Vector3(1, 0, 0)
+      : new Vector3(delta.x / s, delta.y / s, delta.z / s).normalize();
+    const amplifiedDelta = new Quaternion()
+      .setFromAxisAngle(axis, angle * this.jointMotionGain)
+      .normalize();
+    return bindLocal.clone().multiply(amplifiedDelta).normalize();
   }
 
   /**
@@ -358,7 +462,8 @@ export class Retargeter {
       ?? this.axisLocalByJoint.get(jointName)
       ?? new Vector3(1, 0, 0);
 
-    const constrained = this.constrainLocalQuaternion(localTarget, bindLocal, axisLocal, cfg);
+    const targetWithGain = this.amplifyLocalTarget(localTarget, bindLocal);
+    const constrained = this.constrainLocalQuaternion(targetWithGain, bindLocal, axisLocal, cfg);
     const prev = this.prevLocalByBoneName.get(bone.name) ?? bindLocal.clone();
 
     const maxStepRad = MathUtils.degToRad(cfg.maxStepDeg);
@@ -458,8 +563,8 @@ export class Retargeter {
       this._rootRotFiltered.copy(rootTargetRot);
       this._rootInitialized = true;
     } else {
-      this._rootPosFiltered.lerp(rootTargetPos, 0.28);
-      this._rootRotFiltered.slerp(rootTargetRot, 0.24);
+      this._rootPosFiltered.lerp(rootTargetPos, this.rootPosSmoothing);
+      this._rootRotFiltered.slerp(rootTargetRot, this.rootRotSmoothing);
     }
 
     if (this.rootDriver) {

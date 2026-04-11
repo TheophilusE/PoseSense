@@ -46,6 +46,10 @@ The procedural avatar intentionally uses a minimal set of body primitives
 (torso/head + upper/lower arms and legs + feet) to keep visualization clean
 while still preserving elbow/knee bends.
 
+The procedural avatar also uses a dedicated high-response retarget profile,
+with stronger motion amplification and world-relative root motion so movement
+is easier to read.
+
 ## Build
 
 ```bash

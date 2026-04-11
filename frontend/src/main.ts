@@ -689,6 +689,8 @@ function applyRenderOptions() {
     retargeter = new Retargeter(skinned, {
       rootScale: 1.0,
       frameYawDeg: useProceduralAvatar ? 180 : 0,
+      motionProfile: useProceduralAvatar ? 'procedural' : 'default',
+      rootDriverObject: modelRoot,
       // corrections: { LeftForeArm: new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1,0,0), Math.PI/2) }
     });
 

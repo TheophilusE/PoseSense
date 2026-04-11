@@ -30,12 +30,19 @@ function attachSegment(parent: THREE.Bone, child: THREE.Bone, radius: number, ma
   parent.add(mesh);
 }
 
-function attachJointSphere(parent: THREE.Bone, radius: number, material: THREE.Material): void {
-  const geom = new THREE.SphereGeometry(radius, 12, 10);
+function attachCapsuleLocal(parent: THREE.Object3D, localVector: THREE.Vector3, radius: number, material: THREE.Material, name: string): void {
+  const length = localVector.length();
+  if (length < 1e-4) return;
+
+  const shaftLength = Math.max(length - (radius * 2.0), 0.001);
+  const geom = new THREE.CapsuleGeometry(radius, shaftLength, 4, 8);
   const mesh = new THREE.Mesh(geom, material);
+  const up = new THREE.Vector3(0, 1, 0);
+  mesh.position.copy(localVector).multiplyScalar(0.5);
+  mesh.quaternion.setFromUnitVectors(up, localVector.clone().normalize());
   mesh.castShadow = true;
   mesh.receiveShadow = true;
-  mesh.name = `${parent.name}_joint`;
+  mesh.name = name;
   parent.add(mesh);
 }
 
@@ -130,41 +137,26 @@ export function createProceduralHumanoid(): ProceduralHumanoidRig {
 
   const torsoMat = new THREE.MeshStandardMaterial({ color: 0x5b8def, roughness: 0.45, metalness: 0.05 });
   const limbMat = new THREE.MeshStandardMaterial({ color: 0x58b27d, roughness: 0.5, metalness: 0.04 });
-  const jointMat = new THREE.MeshStandardMaterial({ color: 0xf2994a, roughness: 0.38, metalness: 0.06 });
   const headMat = new THREE.MeshStandardMaterial({ color: 0xe8d6c1, roughness: 0.55, metalness: 0.0 });
+  const footMat = new THREE.MeshStandardMaterial({ color: 0x4f5d75, roughness: 0.58, metalness: 0.02 });
 
-  attachSegment(hips, spine, 0.07, torsoMat);
-  attachSegment(spine, spine1, 0.068, torsoMat);
-  attachSegment(spine1, spine2, 0.066, torsoMat);
-  attachSegment(spine2, neck, 0.055, torsoMat);
-  attachSegment(neck, head, 0.045, torsoMat);
+  // Keep the procedural mesh intentionally simple: one torso, one head,
+  // and two segments per major limb.
+  attachCapsuleLocal(hips, new THREE.Vector3(0, 0.5, 0), 0.085, torsoMat, 'Torso');
 
-  attachSegment(spine2, leftShoulder, 0.04, limbMat);
-  attachSegment(leftShoulder, leftArm, 0.043, limbMat);
-  attachSegment(leftArm, leftForeArm, 0.039, limbMat);
-  attachSegment(leftForeArm, leftHand, 0.033, limbMat);
+  attachSegment(leftArm, leftForeArm, 0.043, limbMat);
+  attachSegment(leftForeArm, leftHand, 0.037, limbMat);
 
-  attachSegment(spine2, rightShoulder, 0.04, limbMat);
-  attachSegment(rightShoulder, rightArm, 0.043, limbMat);
-  attachSegment(rightArm, rightForeArm, 0.039, limbMat);
-  attachSegment(rightForeArm, rightHand, 0.033, limbMat);
+  attachSegment(rightArm, rightForeArm, 0.043, limbMat);
+  attachSegment(rightForeArm, rightHand, 0.037, limbMat);
 
-  attachSegment(hips, leftUpLeg, 0.052, limbMat);
   attachSegment(leftUpLeg, leftLeg, 0.05, limbMat);
-  attachSegment(leftLeg, leftFoot, 0.045, limbMat);
-  attachSegment(leftFoot, leftToeBase, 0.03, limbMat);
+  attachSegment(leftLeg, leftFoot, 0.046, limbMat);
+  attachSegment(leftFoot, leftToeBase, 0.03, footMat);
 
-  attachSegment(hips, rightUpLeg, 0.052, limbMat);
   attachSegment(rightUpLeg, rightLeg, 0.05, limbMat);
-  attachSegment(rightLeg, rightFoot, 0.045, limbMat);
-  attachSegment(rightFoot, rightToeBase, 0.03, limbMat);
-
-  attachJointSphere(hips, 0.075, jointMat);
-  attachJointSphere(spine2, 0.06, jointMat);
-  attachJointSphere(leftHand, 0.038, jointMat);
-  attachJointSphere(rightHand, 0.038, jointMat);
-  attachJointSphere(leftFoot, 0.035, jointMat);
-  attachJointSphere(rightFoot, 0.035, jointMat);
+  attachSegment(rightLeg, rightFoot, 0.046, limbMat);
+  attachSegment(rightFoot, rightToeBase, 0.03, footMat);
 
   const headMesh = new THREE.Mesh(new THREE.SphereGeometry(0.09, 16, 12), headMat);
   headMesh.position.set(0, 0.11, 0);

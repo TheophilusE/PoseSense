@@ -42,6 +42,10 @@ Example:
 
 `http://localhost:5173/?avatar=mixamo`
 
+The procedural avatar intentionally uses a minimal set of body primitives
+(torso/head + upper/lower arms and legs + feet) to keep visualization clean
+while still preserving elbow/knee bends.
+
 ## Build
 
 ```bash

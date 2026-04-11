@@ -154,7 +154,6 @@ class PoseProcessor:
         self._last_ts_ms = 0
         self._latest_camera_jpeg: Optional[bytes] = None
         self._latest_pose_landmarks_2d: Optional[List[List[float]]] = None
-        self._world_axis_initialized = False
         self._world_axis_flip = np.array([1.0, 1.0, 1.0], dtype=np.float64)
         self._prev_world_landmarks: Optional[np.ndarray] = None
 
@@ -208,27 +207,24 @@ class PoseProcessor:
     def _normalize_world_axes(self, lmk: np.ndarray) -> np.ndarray:
         """Normalize MediaPipe world landmarks to a stable upright frame.
 
-        MediaPipe world axes can vary by backend/camera conventions. We lock a
-        flip vector once from the first valid frame to keep temporal continuity:
-        - Ensure shoulders are above pelvis in +Y (upright convention).
-        - Ensure right hip is to the right of left hip in +X.
+        We continuously infer axis signs so a bad first detection does not lock
+        the rig into a permanently inverted orientation.
         """
         if lmk is None or lmk.shape[0] <= 24:
             return lmk
 
-        if not self._world_axis_initialized:
-            try:
-                shoulder_y = float((lmk[11, 1] + lmk[12, 1]) * 0.5)
-                pelvis_y = float((lmk[23, 1] + lmk[24, 1]) * 0.5)
-                if shoulder_y < pelvis_y:
-                    self._world_axis_flip[1] = -1.0
+        try:
+            shoulder_y = float((lmk[11, 1] + lmk[12, 1]) * 0.5)
+            pelvis_y = float((lmk[23, 1] + lmk[24, 1]) * 0.5)
+            self._world_axis_flip[1] = 1.0 if shoulder_y >= pelvis_y else -1.0
 
-                # Keep lateral handedness stable (right side should have +X).
-                if float(lmk[24, 0]) < float(lmk[23, 0]):
-                    self._world_axis_flip[0] = -1.0
-            except Exception:
-                pass
-            self._world_axis_initialized = True
+            # Keep lateral handedness stable (right side should have +X) while
+            # avoiding sign churn when hips are nearly overlapping in projection.
+            hip_dx = float(lmk[24, 0] - lmk[23, 0])
+            if abs(hip_dx) > 1e-4:
+                self._world_axis_flip[0] = 1.0 if hip_dx >= 0 else -1.0
+        except Exception:
+            pass
 
         return lmk * self._world_axis_flip
 

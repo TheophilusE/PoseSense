@@ -99,11 +99,12 @@ export class Retargeter {
     maxStepDeg: 25,
   };
 
-  constructor(skinnedMesh: SkinnedMesh, options?: { rootScale?: number; corrections?: Record<string, Quaternion> }) {
+  constructor(skinnedMesh: SkinnedMesh, options?: { rootScale?: number; corrections?: Record<string, Quaternion>; frameYawDeg?: number }) {
     this.mesh = skinnedMesh;
     this.skeleton = skinnedMesh.skeleton;
     this.rootScale = options?.rootScale ?? 1.0;
-    this._frameYawFix.setFromAxisAngle(this._upAxis, Math.PI);
+    const frameYawDeg = options?.frameYawDeg ?? 0;
+    this._frameYawFix.setFromAxisAngle(this._upAxis, MathUtils.degToRad(frameYawDeg));
 
     for (const b of this.skeleton.bones) {
       this.bonesByName.set(b.name, b);

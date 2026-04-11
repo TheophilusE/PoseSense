@@ -18,6 +18,7 @@ type RetargeterOptions = {
   corrections?: Record<string, Quaternion>;
   frameYawDeg?: number;
   motionProfile?: MotionProfile;
+  enableLegIK?: boolean;
   rootDriverObject?: Object3D | null;
   jointMotionGain?: number;
   rootPosSmoothing?: number;
@@ -69,11 +70,25 @@ export class Retargeter {
   private keepGrounded = false;
   private groundY = 0.0;
   private groundPenetrationEpsilon = 0.008;
+  private enableLegIK = false;
+  private legTargetSmoothing = 0.58;
 
+  private leftUpLegBone: Bone | null = null;
+  private rightUpLegBone: Bone | null = null;
+  private leftLegBone: Bone | null = null;
+  private rightLegBone: Bone | null = null;
   private leftFootBone: Bone | null = null;
   private rightFootBone: Bone | null = null;
   private leftToeBone: Bone | null = null;
   private rightToeBone: Bone | null = null;
+  private leftUpperLen = 0.42;
+  private rightUpperLen = 0.42;
+  private leftLowerLen = 0.42;
+  private rightLowerLen = 0.42;
+  private leftLegTargetFiltered = new Vector3();
+  private rightLegTargetFiltered = new Vector3();
+  private leftLegTargetInitialized = false;
+  private rightLegTargetInitialized = false;
 
   // Temp objects reused each frame.
   private _qa = new Quaternion();
@@ -84,7 +99,25 @@ export class Retargeter {
   private _vt = new Vector3();
   private _vu = new Vector3();
   private _vw = new Vector3();
+  private _vx = new Vector3();
+  private _vy = new Vector3();
+  private _vz = new Vector3();
+  private _ikV1 = new Vector3();
+  private _ikV2 = new Vector3();
+  private _ikV3 = new Vector3();
+  private _ikV4 = new Vector3();
+  private _ikV5 = new Vector3();
+  private _ikV6 = new Vector3();
+  private _ikV7 = new Vector3();
+  private _ikV8 = new Vector3();
+  private _ikV9 = new Vector3();
+  private _ikV10 = new Vector3();
   private _identity = new Quaternion();
+  private _ikQ1 = new Quaternion();
+  private _ikQ2 = new Quaternion();
+  private _ikQ3 = new Quaternion();
+  private _ikQ4 = new Quaternion();
+  private _ikQ5 = new Quaternion();
   private _tmpForward = new Vector3();
   private _upAxis = new Vector3(0, 1, 0);
   private _frameYawFix = new Quaternion();
@@ -168,10 +201,18 @@ export class Retargeter {
       ? this.mesh.parent
       : null;
     this.rootDriver = options?.rootDriverObject ?? preferredParent ?? this.resolveRootDriver(this.rootBone);
+    this.leftUpLegBone = this.findBoneByName('LeftUpLeg') ?? null;
+    this.rightUpLegBone = this.findBoneByName('RightUpLeg') ?? null;
+    this.leftLegBone = this.findBoneByName('LeftLeg') ?? null;
+    this.rightLegBone = this.findBoneByName('RightLeg') ?? null;
     this.leftFootBone = this.findBoneByName('LeftFoot') ?? null;
     this.rightFootBone = this.findBoneByName('RightFoot') ?? null;
     this.leftToeBone = this.findBoneByName('LeftToeBase') ?? null;
     this.rightToeBone = this.findBoneByName('RightToeBase') ?? null;
+    this.leftUpperLen = this.leftLegBone ? Math.max(this.leftLegBone.position.length(), 0.12) : 0.42;
+    this.rightUpperLen = this.rightLegBone ? Math.max(this.rightLegBone.position.length(), 0.12) : 0.42;
+    this.leftLowerLen = this.leftFootBone ? Math.max(this.leftFootBone.position.length(), 0.12) : 0.42;
+    this.rightLowerLen = this.rightFootBone ? Math.max(this.rightFootBone.position.length(), 0.12) : 0.42;
 
     this.rootBindPos.copy(this.rootBone.position);
     this.rootBindRot.copy(this.rootBone.quaternion);
@@ -303,6 +344,7 @@ export class Retargeter {
     if (motionProfile === 'procedural') {
       this.applyProceduralMotionProfile();
     }
+    this.enableLegIK = options?.enableLegIK ?? (motionProfile === 'procedural');
 
     if (typeof options?.jointMotionGain === 'number') {
       this.jointMotionGain = Math.max(0.5, options.jointMotionGain);
@@ -426,6 +468,212 @@ export class Retargeter {
     const mover = this.rootDriver ?? this.rootBone;
     mover.position.y += lift;
     this._rootPosFiltered.y += lift;
+  }
+
+  private readIntermediateTargetRelative(frame: PoseFrame, key: string, out: Vector3): boolean {
+    const meta = frame.meta as any;
+    const map = meta?.intermediate_targets ?? meta?.intermediate_targets_raw;
+    const raw = map?.[key];
+    if (!Array.isArray(raw) || raw.length < 3) return false;
+
+    const x = Number(raw[0]);
+    const y = Number(raw[1]);
+    const z = Number(raw[2]);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return false;
+
+    const root = frame.root?.position;
+    if (!Array.isArray(root) || root.length < 3) return false;
+    const rx = Number(root[0]);
+    const ry = Number(root[1]);
+    const rz = Number(root[2]);
+    if (!Number.isFinite(rx) || !Number.isFinite(ry) || !Number.isFinite(rz)) return false;
+
+    out.set(x - rx, y - ry, z - rz)
+      .multiplyScalar(this.rootScale)
+      .applyQuaternion(this._frameYawFix);
+    return true;
+  }
+
+  private getInterpolatedIntermediateRelative(a: PoseFrame, b: PoseFrame, alpha: number, key: string, out: Vector3): boolean {
+    const hasA = this.readIntermediateTargetRelative(a, key, this._ikV1);
+    const hasB = this.readIntermediateTargetRelative(b, key, this._ikV2);
+    if (!hasA && !hasB) return false;
+    if (hasA && hasB) {
+      out.copy(this._ikV1).lerp(this._ikV2, alpha);
+      return true;
+    }
+    out.copy(hasA ? this._ikV1 : this._ikV2);
+    return true;
+  }
+
+  private getLegTargetWorld(a: PoseFrame, b: PoseFrame, alpha: number, ankleKey: string, out: Vector3): boolean {
+    const ok = this.getInterpolatedIntermediateRelative(a, b, alpha, ankleKey, this._ikV3);
+    if (!ok) return false;
+
+    out.copy(this._rootPosFiltered).add(this._ikV3);
+    if (this.keepGrounded) {
+      // Plant feet when they are near the ground while still allowing clear foot lifts.
+      const lift = out.y - this.groundY;
+      if (lift < 0.16) {
+        out.y = this.groundY + 0.014;
+      }
+    }
+    return true;
+  }
+
+  private getLegPoleWorld(a: PoseFrame, b: PoseFrame, alpha: number, kneeKey: string, fallback: Vector3, out: Vector3): Vector3 {
+    const ok = this.getInterpolatedIntermediateRelative(a, b, alpha, kneeKey, this._ikV4);
+    if (ok) {
+      return out.copy(this._rootPosFiltered).add(this._ikV4);
+    }
+    return out.copy(fallback);
+  }
+
+  private solveTwoBoneIk(
+    upper: Bone,
+    lower: Bone,
+    end: Bone,
+    targetWorld: Vector3,
+    poleWorld: Vector3,
+    lenUpper: number,
+    lenLower: number,
+    upperJointName: string,
+    lowerJointName: string,
+  ): void {
+    this.mesh.updateMatrixWorld(true);
+
+    upper.getWorldPosition(this._ikV5);
+    lower.getWorldPosition(this._ikV6);
+    end.getWorldPosition(this._ikV7);
+
+    const toTarget = this._ikV8.copy(targetWorld).sub(this._ikV5);
+    let dist = toTarget.length();
+    if (dist < 1e-6) return;
+
+    const minReach = Math.max(Math.abs(lenUpper - lenLower) + 1e-4, 1e-4);
+    const maxReach = Math.max(lenUpper + lenLower - 1e-4, minReach + 1e-4);
+    dist = clamp(dist, minReach, maxReach);
+    const dir = toTarget.normalize();
+
+    const bend = this._ikV9.copy(poleWorld).sub(this._ikV5);
+    bend.sub(this._ikV10.copy(dir).multiplyScalar(bend.dot(dir)));
+    if (bend.lengthSq() < 1e-8) {
+      bend.copy(this._ikV6).sub(this._ikV5);
+      bend.sub(this._ikV10.copy(dir).multiplyScalar(bend.dot(dir)));
+    }
+    if (bend.lengthSq() < 1e-8) {
+      bend.set(0, 0, 1);
+      bend.sub(this._ikV10.copy(dir).multiplyScalar(bend.dot(dir)));
+    }
+    bend.normalize();
+
+    const x = ((lenUpper * lenUpper) - (lenLower * lenLower) + (dist * dist)) / (2 * dist);
+    const y = Math.sqrt(Math.max((lenUpper * lenUpper) - (x * x), 0));
+    const midTarget = this._vx.copy(this._ikV5).addScaledVector(dir, x).addScaledVector(bend, y);
+    const endTarget = this._vy.copy(this._ikV5).addScaledVector(dir, dist);
+
+    upper.getWorldQuaternion(this._ikQ1);
+    const curUpperDir = this._vz.copy(this._ikV6).sub(this._ikV5).normalize();
+    const desUpperDir = this._ikV1.copy(midTarget).sub(this._ikV5).normalize();
+    if (curUpperDir.lengthSq() > 1e-8 && desUpperDir.lengthSq() > 1e-8) {
+      this._ikQ2.setFromUnitVectors(curUpperDir, desUpperDir);
+      this._ikQ3.copy(this._ikQ2).multiply(this._ikQ1);
+
+      const parent = upper.parent as Object3D | null;
+      if (parent) {
+        parent.getWorldQuaternion(this._ikQ4);
+        this._ikQ4.invert();
+        const upperLocal = this._ikQ5.copy(this._ikQ4).multiply(this._ikQ3);
+        this.applyConstrainedLocalRotation(upper, upperLocal, upperJointName);
+      }
+    }
+
+    this.mesh.updateMatrixWorld(true);
+    lower.getWorldPosition(this._ikV6);
+    end.getWorldPosition(this._ikV7);
+    lower.getWorldQuaternion(this._ikQ1);
+
+    const curLowerDir = this._ikV2.copy(this._ikV7).sub(this._ikV6).normalize();
+    const desLowerDir = this._ikV3.copy(endTarget).sub(this._ikV6).normalize();
+    if (curLowerDir.lengthSq() > 1e-8 && desLowerDir.lengthSq() > 1e-8) {
+      this._ikQ2.setFromUnitVectors(curLowerDir, desLowerDir);
+      this._ikQ3.copy(this._ikQ2).multiply(this._ikQ1);
+
+      const parent = lower.parent as Object3D | null;
+      if (parent) {
+        parent.getWorldQuaternion(this._ikQ4);
+        this._ikQ4.invert();
+        const lowerLocal = this._ikQ5.copy(this._ikQ4).multiply(this._ikQ3);
+        this.applyConstrainedLocalRotation(lower, lowerLocal, lowerJointName);
+      }
+    }
+  }
+
+  private applyProceduralLegIk(a: PoseFrame, b: PoseFrame, alpha: number): void {
+    if (!this.enableLegIK) return;
+    if (!this.leftUpLegBone || !this.leftLegBone || !this.leftFootBone) return;
+    if (!this.rightUpLegBone || !this.rightLegBone || !this.rightFootBone) return;
+
+    const hasLeftTarget = this.getLegTargetWorld(a, b, alpha, 'left_ankle', this._ikV4);
+    const hasRightTarget = this.getLegTargetWorld(a, b, alpha, 'right_ankle', this._ikV5);
+
+    if (!hasLeftTarget && !hasRightTarget) return;
+
+    if (hasLeftTarget) {
+      if (!this.leftLegTargetInitialized) {
+        this.leftLegTargetFiltered.copy(this._ikV4);
+        this.leftLegTargetInitialized = true;
+      } else {
+        this.leftLegTargetFiltered.lerp(this._ikV4, this.legTargetSmoothing);
+      }
+      const leftPole = this.getLegPoleWorld(
+        a,
+        b,
+        alpha,
+        'left_knee',
+        this._ikV6.copy(this.leftLegTargetFiltered).add(new Vector3(0, 0, 0.25)),
+        this._ikV7,
+      );
+      this.solveTwoBoneIk(
+        this.leftUpLegBone,
+        this.leftLegBone,
+        this.leftFootBone,
+        this.leftLegTargetFiltered,
+        leftPole,
+        this.leftUpperLen,
+        this.leftLowerLen,
+        'LeftUpLeg',
+        'LeftLeg',
+      );
+    }
+
+    if (hasRightTarget) {
+      if (!this.rightLegTargetInitialized) {
+        this.rightLegTargetFiltered.copy(this._ikV5);
+        this.rightLegTargetInitialized = true;
+      } else {
+        this.rightLegTargetFiltered.lerp(this._ikV5, this.legTargetSmoothing);
+      }
+      const rightPole = this.getLegPoleWorld(
+        a,
+        b,
+        alpha,
+        'right_knee',
+        this._ikV8.copy(this.rightLegTargetFiltered).add(new Vector3(0, 0, 0.25)),
+        this._ikV9,
+      );
+      this.solveTwoBoneIk(
+        this.rightUpLegBone,
+        this.rightLegBone,
+        this.rightFootBone,
+        this.rightLegTargetFiltered,
+        rightPole,
+        this.rightUpperLen,
+        this.rightLowerLen,
+        'RightUpLeg',
+        'RightLeg',
+      );
+    }
   }
 
   /**
@@ -741,6 +989,10 @@ export class Retargeter {
     }
 
     if (!this._loggedMappings) this._loggedMappings = true;
+
+    if (this.enableLegIK) {
+      this.applyProceduralLegIk(a, b, alpha);
+    }
 
     // Upload to GPU
     this.skeleton.update();

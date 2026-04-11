@@ -53,6 +53,10 @@ is easier to read.
 For procedural mode, the avatar root is grounded to the world floor (`y=0`)
 and feet are corrected if they penetrate below the ground plane.
 
+Procedural mode also runs an analytic two-bone IK pass for each leg using
+backend intermediate targets (`left_knee`/`left_ankle`, `right_knee`/`right_ankle`)
+to keep knees bending naturally and reduce floating-leg artifacts.
+
 ## Build
 
 ```bash

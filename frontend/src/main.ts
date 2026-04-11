@@ -690,6 +690,7 @@ function applyRenderOptions() {
       rootScale: 1.0,
       frameYawDeg: useProceduralAvatar ? 180 : 0,
       motionProfile: useProceduralAvatar ? 'procedural' : 'default',
+      enableLegIK: useProceduralAvatar,
       rootDriverObject: modelRoot,
       groundCharacter: useProceduralAvatar,
       groundY: useProceduralAvatar ? 0 : undefined,

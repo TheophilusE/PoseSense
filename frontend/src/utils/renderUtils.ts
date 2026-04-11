@@ -93,6 +93,7 @@ export class ServerSkeletonHelper {
     private _vG = new THREE.Vector3();
     private _qA = new THREE.Quaternion();
     private _qB = new THREE.Quaternion();
+    private _qC = new THREE.Quaternion();
 
     constructor(names: string[]) {
         this.names = names.slice();
@@ -125,7 +126,9 @@ export class ServerSkeletonHelper {
             rootPos.set(Number(frame.root.position[0]), Number(frame.root.position[1]), Number(frame.root.position[2]));
         }
 
-        const rootQ = this._quatFromWxyz(frame?.root?.rotation, this._qA);
+        const frameYawFix = this._qC.setFromAxisAngle(this._vE.set(0, 1, 0), Math.PI);
+        rootPos.applyQuaternion(frameYawFix);
+        const rootQ = this._quatFromWxyz(frame?.root?.rotation, this._qA).premultiply(frameYawFix);
 
         const scaleRaw = Number(frame?.meta?.scale);
         const baseScale = Number.isFinite(scaleRaw) ? Math.max(0.08, scaleRaw) : 0.23;
@@ -142,6 +145,7 @@ export class ServerSkeletonHelper {
             for (const j of frame.joints) {
                 const qq = new THREE.Quaternion();
                 this._quatFromWxyz(j?.rotation, qq);
+                qq.premultiply(frameYawFix);
                 jointMap.set(String(j?.name ?? ''), qq);
             }
         }

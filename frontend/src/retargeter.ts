@@ -16,6 +16,8 @@ export class Retargeter {
   private skeleton: SkinnedMesh['skeleton'];
   private bonesByName = new Map<string, Bone>();
   private corrections = new Map<string, Quaternion>();
+  private sourceRestDirByJoint = new Map<string, Vector3>();
+  private modelRestDirByJoint = new Map<string, Vector3>();
   private constraints = new Map<string, JointConstraint>();
   private bindLocalByBoneName = new Map<string, Quaternion>();
   private axisLocalByJoint = new Map<string, Vector3>();
@@ -52,6 +54,7 @@ export class Retargeter {
   private _identity = new Quaternion();
   private _tmpForward = new Vector3();
   private _upAxis = new Vector3(0, 1, 0);
+  private _frameYawFix = new Quaternion();
 
   private _rootPosFiltered = new Vector3();
   private _rootRotFiltered = new Quaternion();
@@ -71,15 +74,12 @@ export class Retargeter {
       case 'LeftLeg': return 'LeftLeg';
       case 'RightUpLeg': return 'RightUpLeg';
       case 'RightLeg': return 'RightLeg';
-      // Webcam-facing canonical output can be mirrored relative to Mixamo rig
-      // handedness. Swap upper-limb side mapping to keep mesh arms aligned
-      // with the visually-correct server skeleton overlay.
-      case 'LeftShoulder': return 'RightShoulder';
-      case 'LeftArm': return 'RightArm';
-      case 'LeftForeArm': return 'RightForeArm';
-      case 'RightShoulder': return 'LeftShoulder';
-      case 'RightArm': return 'LeftArm';
-      case 'RightForeArm': return 'LeftForeArm';
+      case 'LeftShoulder': return 'LeftShoulder';
+      case 'LeftArm': return 'LeftArm';
+      case 'LeftForeArm': return 'LeftForeArm';
+      case 'RightShoulder': return 'RightShoulder';
+      case 'RightArm': return 'RightArm';
+      case 'RightForeArm': return 'RightForeArm';
       default: return null;
     }
   };
@@ -96,6 +96,7 @@ export class Retargeter {
     this.mesh = skinnedMesh;
     this.skeleton = skinnedMesh.skeleton;
     this.rootScale = options?.rootScale ?? 1.0;
+    this._frameYawFix.setFromAxisAngle(this._upAxis, Math.PI);
 
     for (const b of this.skeleton.bones) {
       this.bonesByName.set(b.name, b);
@@ -183,6 +184,8 @@ export class Retargeter {
     };
 
     for (const [name, dirArr] of Object.entries(serverRestDirs)) {
+      this.sourceRestDirByJoint.set(name, new Vector3(dirArr[0], dirArr[1], dirArr[2]).normalize());
+
       const bone = this.findBoneByName(name);
       if (!bone) continue;
 
@@ -196,6 +199,7 @@ export class Retargeter {
       bone.getWorldPosition(a);
       childBone.getWorldPosition(b);
       const modelDir = b.sub(a).normalize();
+      this.modelRestDirByJoint.set(name, modelDir.clone());
 
       const serverDir = new Vector3(dirArr[0], dirArr[1], dirArr[2]).normalize();
 
@@ -406,10 +410,10 @@ export class Retargeter {
     const alpha = clamp(alphaIn, 0, 1);
 
     // Root pose
-    const pa = this.extractRootPosition(a, this._vs);
-    const pb = this.extractRootPosition(b, this._vt);
-    const qa = quatFromArray(a.root.rotation);
-    const qb = quatFromArray(b.root.rotation);
+    const pa = this.extractRootPosition(a, this._vs).applyQuaternion(this._frameYawFix);
+    const pb = this.extractRootPosition(b, this._vt).applyQuaternion(this._frameYawFix);
+    const qa = this._qa.copy(this._frameYawFix).multiply(quatFromArray(a.root.rotation));
+    const qb = this._qb.copy(this._frameYawFix).multiply(quatFromArray(b.root.rotation));
 
     const p = lerpVec3(this._vr, pa, pb, alpha);
     const q = slerpQuat(this._qr, qa, qb, alpha);
@@ -477,6 +481,7 @@ export class Retargeter {
       const qA = quatFromArray(rotA);
       const qB = quatFromArray(rotB);
       const qL = slerpQuat(this._qa, qA, qB, alpha);
+      const qLf = this._qb.copy(this._frameYawFix).multiply(qL);
 
       const corr = this.corrections.get(tname);
 
@@ -490,9 +495,18 @@ export class Retargeter {
       // frame (older backend) or already in model space (new backend).
       // If we have a per-bone correction and the server did not already
       // convert into model space, apply it by right-multiplying.
-      const desiredWorld = (!serverIsModelSpace && corr)
-        ? this._qb.copy(qL).multiply(corr)
-        : qL.clone();
+      let desiredWorld = qLf.clone();
+      if (!serverIsModelSpace) {
+        const sourceRest = this.sourceRestDirByJoint.get(srvName);
+        const targetRest = this.modelRestDirByJoint.get(tname);
+
+        if (sourceRest && targetRest) {
+          const modelToSource = this._qb.setFromUnitVectors(targetRest, sourceRest);
+          desiredWorld = desiredWorld.multiply(modelToSource);
+        } else if (corr) {
+          desiredWorld = desiredWorld.multiply(corr);
+        }
+      }
 
       // Get parent world quaternion (Object3D.getWorldQuaternion writes into target)
       const parent = bone.parent as Object3D | null;

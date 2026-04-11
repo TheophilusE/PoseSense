@@ -530,6 +530,16 @@ camera.position.set(2.5, 1.6, 2.8);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.target.set(0, 1.0, 0);
 controls.enableDamping = true;
+const cameraFollowEnabled = true;
+const cameraFollowAnchorSmoothing = 0.24;
+const cameraFollowPositionSmoothing = 0.10;
+const cameraFollowHeightOffset = 0.95;
+const cameraFollowAnchor = new THREE.Vector3();
+const cameraFollowAnchorFiltered = new THREE.Vector3();
+const cameraFollowDesiredPos = new THREE.Vector3();
+const cameraFollowOffset = new THREE.Vector3();
+const cameraFollowFrameYawFix = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
+let cameraFollowInitialized = false;
 
 // Lights/ground (same as before)
 // Studio lighting: subtle sky/fill, strong key, and a rim light
@@ -580,6 +590,11 @@ const groundFollowSmoothing = 0.28;
 const groundProbe = new THREE.Vector3();
 
 function getGroundYFromModelFeet(): number | null {
+  if (serverBodyMesh) {
+    const serverFeetY = serverBodyMesh.getMinFootWorldY();
+    if (serverFeetY !== null) return serverFeetY;
+  }
+
   if (!modelBonesByName) return null;
 
   const probeKeys = [
@@ -632,6 +647,49 @@ function updateGroundHeight(frame: PoseFrame | null): void {
   groundTargetY = footY - groundOffsetBelowFeet;
   ground.position.y += (groundTargetY - ground.position.y) * groundFollowSmoothing;
   grid.position.y = ground.position.y + 0.002;
+}
+
+function resolveCameraFollowAnchor(frame: PoseFrame | null, out: THREE.Vector3): boolean {
+  if (serverBodyMesh && serverBodyMesh.getFollowAnchorWorld(out)) {
+    return true;
+  }
+
+  if (modelRoot) {
+    modelRoot.getWorldPosition(out);
+    out.y += cameraFollowHeightOffset;
+    return true;
+  }
+
+  const root = frame?.root?.position;
+  if (!Array.isArray(root) || root.length < 3) return false;
+  const x = Number(root[0]);
+  const y = Number(root[1]);
+  const z = Number(root[2]);
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return false;
+
+  out.set(x, y, z).applyQuaternion(cameraFollowFrameYawFix);
+  out.y += cameraFollowHeightOffset;
+  return true;
+}
+
+function updateCameraFollow(frame: PoseFrame | null): void {
+  if (!cameraFollowEnabled) return;
+  if (!resolveCameraFollowAnchor(frame, cameraFollowAnchor)) return;
+
+  if (!cameraFollowInitialized) {
+    cameraFollowInitialized = true;
+    cameraFollowAnchorFiltered.copy(cameraFollowAnchor);
+  } else {
+    cameraFollowAnchorFiltered.lerp(cameraFollowAnchor, cameraFollowAnchorSmoothing);
+  }
+
+  // Keep user orbit framing while translating with the character.
+  cameraFollowOffset.copy(camera.position).sub(controls.target);
+  cameraFollowDesiredPos.copy(cameraFollowAnchorFiltered).add(cameraFollowOffset);
+
+  // Keep the subject centered by looking directly at the follow anchor.
+  controls.target.copy(cameraFollowAnchorFiltered);
+  camera.position.lerp(cameraFollowDesiredPos, cameraFollowPositionSmoothing);
 }
 
 // Load Y-Bot FBX
@@ -895,7 +953,6 @@ let lastFpsTime = performance.now();
 function animate(): void {
   requestAnimationFrame(animate);
   const dt = clock.getDelta();
-  controls.update();
 
   // update skeleton helper lines if present
   try {
@@ -939,6 +996,8 @@ function animate(): void {
     serverBodyMesh.updateFromPose(frameForViz);
   }
   updateGroundHeight(frameForViz);
+  updateCameraFollow(frameForViz);
+  controls.update();
 
   // Update server skeleton overlay (lazy create)
   try {

@@ -105,13 +105,24 @@ export class ServerBodyMesh {
   private readonly _jointMeshByKey = new Map<JointKey, THREE.Mesh>();
   private readonly _smoothedPointByKey = new Map<JointKey, THREE.Vector3>();
   private readonly _pointSmoothing = 0.36;
+  private readonly _rootMotionGainXZ = 1.0;
+  private readonly _rootMotionGainY = 0.68;
+  private readonly _rootPosSmoothing = 0.22;
   private readonly _frameYawFix = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
+  private readonly _identity = new THREE.Quaternion();
+
+  private _rootInitialized = false;
+  private readonly _rootSourceOrigin = new THREE.Vector3();
+  private readonly _rootPosFiltered = new THREE.Vector3();
+  private readonly _rootTargetPos = new THREE.Vector3();
 
   private readonly _tmpA = new THREE.Vector3();
   private readonly _tmpB = new THREE.Vector3();
   private readonly _tmpDir = new THREE.Vector3();
   private readonly _tmpMid = new THREE.Vector3();
   private readonly _upAxis = new THREE.Vector3(0, 1, 0);
+  private readonly _tmpRootRaw = new THREE.Vector3();
+  private readonly _tmpRootYawed = new THREE.Vector3();
 
   constructor() {
     this.root.name = 'ServerBodyMeshRoot';
@@ -165,6 +176,42 @@ export class ServerBodyMesh {
     mesh.scale.set(radius, len, radius);
   }
 
+  private resolveRootSourceRaw(frame: PoseFrame, targets: Record<string, unknown>, out: THREE.Vector3): boolean {
+    const rawRoot = frame.root?.position;
+    if (Array.isArray(rawRoot) && rawRoot.length >= 3) {
+      const x = Number(rawRoot[0]);
+      const y = Number(rawRoot[1]);
+      const z = Number(rawRoot[2]);
+      if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) {
+        out.set(x, y, z);
+        return true;
+      }
+    }
+
+    return readTargetVec3(targets, 'pelvis', out);
+  }
+
+  private updateRootMotion(rootRaw: THREE.Vector3): void {
+    this._tmpRootYawed.copy(rootRaw).applyQuaternion(this._frameYawFix);
+
+    if (!this._rootInitialized) {
+      this._rootInitialized = true;
+      this._rootSourceOrigin.copy(this._tmpRootYawed);
+      this._rootPosFiltered.set(0, 0, 0);
+      this.root.position.set(0, 0, 0);
+    }
+
+    const delta = this._tmpA.copy(this._tmpRootYawed).sub(this._rootSourceOrigin);
+    this._rootTargetPos.set(
+      delta.x * this._rootMotionGainXZ,
+      delta.y * this._rootMotionGainY,
+      delta.z * this._rootMotionGainXZ,
+    );
+    this._rootPosFiltered.lerp(this._rootTargetPos, this._rootPosSmoothing);
+    this.root.position.copy(this._rootPosFiltered);
+    this.root.quaternion.copy(this._identity);
+  }
+
   updateFromPose(frame: PoseFrame): boolean {
     const meta = frame.meta as any;
     const targets = (meta?.intermediate_targets ?? meta?.intermediate_targets_raw) as Record<string, unknown> | undefined;
@@ -173,10 +220,18 @@ export class ServerBodyMesh {
       return false;
     }
 
+    const hasRootSource = this.resolveRootSourceRaw(frame, targets, this._tmpRootRaw);
+    if (hasRootSource) {
+      this.updateRootMotion(this._tmpRootRaw);
+    }
+
     const points = new Map<JointKey, THREE.Vector3>();
     for (const key of JOINT_KEYS) {
       if (!readTargetVec3(targets, key, this._tmpA)) continue;
 
+      if (hasRootSource) {
+        this._tmpA.sub(this._tmpRootRaw);
+      }
       this._tmpA.applyQuaternion(this._frameYawFix);
       const prev = this._smoothedPointByKey.get(key);
       if (!prev) {
@@ -223,6 +278,29 @@ export class ServerBodyMesh {
     }
 
     return true;
+  }
+
+  getFollowAnchorWorld(out: THREE.Vector3): boolean {
+    const pelvis = this._jointMeshByKey.get('pelvis');
+    if (!pelvis || !pelvis.visible) return false;
+
+    pelvis.getWorldPosition(out);
+    out.y += 0.92;
+    return true;
+  }
+
+  getMinFootWorldY(): number | null {
+    const keys: JointKey[] = ['left_foot_index', 'right_foot_index', 'left_foot', 'right_foot', 'left_ankle', 'right_ankle'];
+    let minY = Number.POSITIVE_INFINITY;
+    let found = false;
+    for (const key of keys) {
+      const joint = this._jointMeshByKey.get(key);
+      if (!joint || !joint.visible) continue;
+      joint.getWorldPosition(this._tmpB);
+      minY = Math.min(minY, this._tmpB.y);
+      found = true;
+    }
+    return found ? minY : null;
   }
 
   dispose(): void {
